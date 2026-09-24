@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "DlssNr_Dx12_ModelState.h"
 #include <dlssnr/DlssNr_Placement.h>
 #include <dlssnr/DlssNr_FinishedReady.h>
@@ -386,7 +386,7 @@ struct DlssNr_Dx12::State
             uint64_t ready = 0, done = 0, serial = 0;
             bool pending = false, submitted = false, residualOnly = false, sceneLinear = true;
         };
-        std::array<Slot, 4> slots;
+        std::array<Slot, 6> slots;
         ComPtr<ID3D12Device> device;
         ComPtr<ID3D12CommandQueue> producerQueue;
         Dx11FinishedPictureBridge dx11;

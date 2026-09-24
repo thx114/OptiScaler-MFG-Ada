@@ -13,7 +13,7 @@ struct Slot
     uint64_t ready = 0, done = 0, serial = 0;
     bool pending = false, submitted = false, residualOnly = false, sceneLinear = true;
 };
-std::array<Slot, 4> slots;
+std::array<Slot, 6> slots;
 ComPtr<ID3D12Device> device;
 uint64_t serial = 0, successes = 0;
 std::string status = "Waiting for a finished picture.";
@@ -82,6 +82,27 @@ Slot* Acquire(ID3D12GraphicsCommandList* cmd)
     Slot* next = nullptr;
     for (auto& slot : slots)
         if (!slot.pending && Finished(slot)) { next = &slot; break; }
+    if (!next)
+    {
+        // Under MFG load the GPU runs a frame or two behind; dropping the capture makes the
+        // edit visibly flicker. Give the oldest in-flight slot a short bounded wait first.
+        Slot* oldest = nullptr;
+        for (auto& slot : slots)
+            if (slot.pending && slot.submitted && slot.fence && (!oldest || slot.serial < oldest->serial))
+                oldest = &slot;
+        if (oldest && oldest->fence)
+        {
+            HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (event)
+            {
+                if (SUCCEEDED(oldest->fence->SetEventOnCompletion(oldest->done, event)))
+                    WaitForSingleObject(event, 3);
+                CloseHandle(event);
+            }
+            for (auto& slot : slots)
+                if (!slot.pending && Finished(slot)) { next = &slot; break; }
+        }
+    }
     if (!next)
     {
         Say("Waiting for the previous picture to finish.");

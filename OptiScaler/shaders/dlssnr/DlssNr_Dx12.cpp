@@ -692,10 +692,22 @@ void DlssNr_Dx12::ApplyFinished(ID3D12Resource* picture, ID3D12CommandQueue* que
 {
     std::lock_guard lock(_state->mutex);
     if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
-        !Config::Instance()->DlssNrEnabled.value_or_default() ||
-        ::State::Instance().externalFrameGeneration ||
-        ::State::Instance().activeFgOutput == FGOutput::DLSSG)
+        !Config::Instance()->DlssNrEnabled.value_or_default())
         _state->late.Cancel();
+    else if (gameFrameHandoff)
+    {
+        // Bridge/FG pre-present hand-off: the picture is the real frame DLSSG interpolates
+        // from, so the compose is valid even with the DLSSG output active.
+        if (picture && queue)
+            _state->ApplyFinishedColor(picture, queue, space, gameFrameHandoff);
+    }
+    else if (::State::Instance().externalFrameGeneration ||
+             ::State::Instance().activeFgOutput == FGOutput::DLSSG)
+    {
+        // Generic caller with the DLSSG output active: the FG pre-present hook owns the
+        // compose. Yield without cancelling -- wiping in-flight slots here is what made the
+        // edit flicker on and off.
+    }
     else if (picture && queue)
         _state->ApplyFinishedColor(picture, queue, space, gameFrameHandoff);
     _state->Publish();

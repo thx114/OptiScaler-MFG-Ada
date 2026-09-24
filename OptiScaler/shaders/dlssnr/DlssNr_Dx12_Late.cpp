@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "DlssNr_Dx12_State.h"
 
 auto DlssNr_Dx12::State::LateContext::Say(const char* message) -> void
@@ -71,6 +71,27 @@ auto DlssNr_Dx12::State::LateContext::Acquire(ID3D12GraphicsCommandList* cmd) ->
             next = &slot;
             break;
         }
+    if (!next)
+    {
+        // Under MFG load the GPU runs a frame or two behind; dropping the compose makes the
+        // edit visibly flicker. Give the oldest in-flight slot a short bounded wait first.
+        Slot* oldest = nullptr;
+        for (auto& slot : slots)
+            if (slot.pending && slot.submitted && slot.fence && (!oldest || slot.serial < oldest->serial))
+                oldest = &slot;
+        if (oldest && oldest->fence)
+        {
+            HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (event)
+            {
+                if (SUCCEEDED(oldest->fence->SetEventOnCompletion(oldest->done, event)))
+                    WaitForSingleObject(event, 3);
+                CloseHandle(event);
+            }
+            for (auto& slot : slots)
+                if (!slot.pending && Finished(slot)) { next = &slot; break; }
+        }
+    }
     if (!next)
     {
         Say("Waiting for the previous picture to finish.");
