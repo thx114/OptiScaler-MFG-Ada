@@ -1,4 +1,4 @@
-﻿#include <pch.h>
+#include <pch.h>
 
 #include "Streamline_Hooks.h"
 #if defined(OPTISCALER_RTX40_MFG)

@@ -1,4 +1,5 @@
 EXPORTS
+OptiScalerSubmitFinalSceneD3D11 = _OptiScalerSubmitFinalSceneD3D11 PRIVATE
 GetBehaviorValue = _GetBehaviorValue @100 PRIVATE
 D3D12CreateDevice = _D3D12CreateDeviceExport @101 PRIVATE
 D3D12GetDebugInterface = _D3D12GetDebugInterfaceExport @102 PRIVATE

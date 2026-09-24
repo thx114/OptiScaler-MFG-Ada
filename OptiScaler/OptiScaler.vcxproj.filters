@@ -1313,6 +1313,9 @@
     <ClCompile Include="inputs\FSR2_Dx11.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="exports\FinalScene_Dx11.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="inputs\FSR2_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

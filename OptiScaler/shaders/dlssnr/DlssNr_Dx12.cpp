@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include <dlssnr/PassProfiles.h>
 
 #include <set>
@@ -785,14 +785,38 @@ void ApplyToFinishedPictureBridge(IDXGISwapChain* swapchain, ID3D12CommandQueue*
     if (!swapchain || !queue ||
         FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&chain))) ||
         FAILED(chain->GetBuffer(chain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&picture))))
+    {
+        static bool reportedBridgeFailure = false;
+        if (!reportedBridgeFailure)
+        {
+            reportedBridgeFailure = true;
+            LOG_INFO("NR bridge: swapchain QI/GetBuffer failed (swapchain {}, queue {})", (void*) swapchain,
+                     (void*) queue);
+        }
         return;
+    }
     auto space = ReadFinishedSpace(swapchain, picture.Get());
     {
         std::lock_guard lock(nrOwnersMutex);
         if (activeNrOwner)
             activeNrOwner->ApplyFinishedBridge(picture.Get(), queue, space);
+        else
+        {
+            static bool reportedNoOwner = false;
+            if (!reportedNoOwner)
+            {
+                reportedNoOwner = true;
+                LOG_INFO("NR bridge: no active NR owner");
+            }
+        }
     }
     bridgeAppliedEpoch.store(::State::Instance().frameCount);
+    static bool reportedBridgeApplied = false;
+    if (!reportedBridgeApplied)
+    {
+        reportedBridgeApplied = true;
+        LOG_INFO("NR bridge: applied picture (epoch {})", (unsigned long long) ::State::Instance().frameCount);
+    }
 }
 bool ConsumeBridgeAppliedEpoch()
 {

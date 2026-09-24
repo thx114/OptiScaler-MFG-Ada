@@ -1,4 +1,4 @@
-﻿// Adapted from y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG, tag v4 (7b7220bb), GPL-3.0.
+// Adapted from y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG, tag v4 (7b7220bb), GPL-3.0.
 #include "pch.h"
 
 #if defined(OPTISCALER_RTX40_MFG)
@@ -578,8 +578,11 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     g_status.KernelsRewritten = kernelContainers;
     g_retainedModule = acquired;
     g_attemptOutcome = AttemptOutcome::Succeeded;
-    LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames (kernels rewritten: {})", kMaxGeneratedFrames,
-             kernelContainers);
+    wchar_t patchedPath[MAX_PATH]{};
+    const DWORD patchedPathLength = GetModuleFileNameW(module, patchedPath, MAX_PATH);
+    LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames (kernels rewritten: {}) - module {:X} [{}]",
+             kMaxGeneratedFrames, kernelContainers, reinterpret_cast<uintptr_t>(module),
+             wstring_to_string(std::wstring(patchedPath, patchedPathLength)));
 
     // Temporal correction is best-effort after the gates are confirmed: a failed redirect leaves the
     // module at duplicate-frame behavior but never invalidates the gate unlock, so it is not fatal.

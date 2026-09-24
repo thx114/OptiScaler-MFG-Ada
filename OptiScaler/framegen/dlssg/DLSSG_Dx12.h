@@ -19,6 +19,15 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
 
     bool Dispatch();
 
+    // Raw numFramesToGenerateMax exactly as the runtime reported it at swapchain/context
+    // creation, before MfgUnlock raises it. -1 until the first successful slDLSSGGetState.
+    // Logged per dispatch so a rotated-away startup line cannot hide the runtime's own value.
+    int _runtimeReportedMaxInterpolation = -1;
+
+    // Raw DLSSGStatus bitmask from the same query. Non-zero flags name the reason the
+    // runtime degrades (no Reflex at runtime, GetCurrentBackBufferIndex not called, ...).
+    unsigned _runtimeReportedStatus = 0;
+
   protected:
     void ReleaseObjects() override final;
     void CreateObjects(ID3D12Device* InDevice) override final;

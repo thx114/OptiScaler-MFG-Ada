@@ -305,7 +305,13 @@ void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue
             Late::reset = true;
             continue;
         }
-        if (slot.residualOnly == residualOnly && slot.frame.OutputWidth == desc.Width && slot.frame.OutputHeight == desc.Height &&
+        // Same soft-margin tolerance as the D3D11wDx12 bridge consumer: the NGX output can be a
+        // couple of pixels smaller than the presented picture; guide scales absorb the difference.
+        const bool slotNearPicture = !slot.residualOnly &&
+                                     std::abs((int) slot.frame.OutputWidth - (int) desc.Width) <= 8 &&
+                                     std::abs((int) slot.frame.OutputHeight - (int) desc.Height) <= 8;
+        if (slot.residualOnly == residualOnly &&
+            (slotNearPicture || (slot.frame.OutputWidth == desc.Width && slot.frame.OutputHeight == desc.Height)) &&
             (!latest || slot.serial > latest->serial))
             latest = &slot;
     }
