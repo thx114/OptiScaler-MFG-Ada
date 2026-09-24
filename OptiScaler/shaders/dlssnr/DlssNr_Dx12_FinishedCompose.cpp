@@ -67,8 +67,10 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             late.reset = true;
             continue;
         }
-        if (!DlssNr::FinishedInputReady(slot.producerQueue.Get() == realQueue,
-                                        slot.fence->GetCompletedValue(), slot.ready))
+        // The compose is submitted on this slot's own producer queue, so same-queue submission
+        // order suffices for readiness. A cross-queue fence wait here starved the slot pool under
+        // MFG load (the GPU runs a frame or two behind) and made the edit flicker.
+        if (!DlssNr::FinishedInputReady(true, slot.fence->GetCompletedValue(), slot.ready))
         {
             if (!late.reportedQueueDelay)
             {
@@ -129,6 +131,13 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     if (slot.serial == late.lastComposedSerial)
         return false;
     late.lastComposedSerial = slot.serial;
+    // Compose on the slot's producer queue: same-queue ordering makes the guides ready as soon as
+    // they are submitted and lands the edit inside the frame the game is about to flip. The FG
+    // pre-present queue can differ on SL-managed games, which forced strict cross-queue fence
+    // waits and starved the slot pool.
+    ID3D12CommandQueue* submitQueue = queue;
+    if (slot.producerQueue && slot.producerQueue.Get() != realQueue)
+        submitQueue = slot.producerQueue.Get();
     const bool holdFinished = slot.residualOnly && Config::Instance()->DlssNrHoldFrame.value_or_default() &&
                               inputHold.active;
     if (!holdFinished)
@@ -339,7 +348,7 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             }
         }
         if (colorReady)
-            Run(cmd, nrColor, slot.depth.Get(), slot.motion.Get(), nrColor, frame, queue);
+            Run(cmd, nrColor, slot.depth.Get(), slot.motion.Get(), nrColor, frame, submitQueue);
         if (pq && colorReady && nr.successfulDispatches > before &&
             Config::Instance()->DlssNrApplyModel.value_or_default())
         {
@@ -378,9 +387,9 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
         return false;
     }
     ID3D12CommandList* lists[] = { cmd };
-    queue->ExecuteCommandLists(1, lists);
+    submitQueue->ExecuteCommandLists(1, lists);
     slot.done = std::max(slot.done, slot.ready) + 1; // held replays also need a fresh completion value
-    if (FAILED(queue->Signal(slot.fence.Get(), slot.done)))
+    if (FAILED(submitQueue->Signal(slot.fence.Get(), slot.done)))
     {
         late.heldFailed |= holdFinished;
         late.Say("The graphics queue stopped. Restart the game to retry.");
@@ -389,7 +398,7 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     if (holdFinished)
     {
         late.heldFence = slot.fence;
-        late.heldQueue = realQueue;
+        late.heldQueue = submitQueue;
         late.heldReady = slot.done;
         late.heldSlot = &slot;
         late.heldSlotSerial = slot.serial;
@@ -406,6 +415,6 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     if (ran && (++late.successes == 1 || late.successes % 300 == 0))
         LOG_INFO("DLSS-NR finished picture: {} frames, {}x{}, OptiScaler FG {}, same producer queue {}, game-frame handoff {}", late.successes, desc.Width, desc.Height,
                  ::State::Instance().currentFG && ::State::Instance().currentFG->IsActive() &&
-                     !::State::Instance().currentFG->IsPaused(), slot.producerQueue.Get() == realQueue, gameFrameHandoff);
+                     !::State::Instance().currentFG->IsPaused(), slot.producerQueue.Get() == submitQueue, gameFrameHandoff);
     return ran;
 }
