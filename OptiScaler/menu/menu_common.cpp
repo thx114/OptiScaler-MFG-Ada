@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include <dlssnr/DlssNr_MenuOverlay.h>
 #include "menu_common.h"
 #if defined(OPTISCALER_RTX40_MFG)
@@ -3254,6 +3254,17 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
             ImGui::TextWrapped("DLSSG %s: unlock unavailable for this runtime.", status.SnippetVersion.c_str());
     }
 #endif
+
+    {
+        bool forceComposition = config->ForceDwmComposition.value_or_default();
+        if (ImGui::Checkbox("Force DWM composed presentation (experimental)", &forceComposition))
+            config->ForceDwmComposition = forceComposition;
+        ShowHelpMarker("Requests the DWM composition path for the game window while OptiScaler owns frame\n"
+                       "generation - the same thing an overlay such as Xbox Game Bar does by being visible.\n"
+                       "Smooths generated-frame pacing and hides reset flicker; costs up to one compositor\n"
+                       "frame of latency. Takes effect on the next presented frame; untick to restore direct\n"
+                       "presentation. Applies while OptiScaler owns FG, including menus.");
+    }
 
     // ── Ampere/Turing (SM86/SM75) MFG Unlock ─────────────────────────
     if (ImGui::CollapsingHeader("RTX 20 / 30 (SM75 / SM86) MFG Unlock"))
