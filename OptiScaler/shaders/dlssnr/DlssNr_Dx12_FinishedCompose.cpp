@@ -124,6 +124,11 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     if (!latest)
         return false; // loading screen, another swapchain, or this real frame was already consumed
     auto& slot = *latest;
+    // One compose per real frame: fg->Present() re-enters the present path for every generated
+    // frame, and composing the same slot twice stacks NR on NR until the picture is mush.
+    if (slot.serial == late.lastComposedSerial)
+        return false;
+    late.lastComposedSerial = slot.serial;
     const bool holdFinished = slot.residualOnly && Config::Instance()->DlssNrHoldFrame.value_or_default() &&
                               inputHold.active;
     if (!holdFinished)
