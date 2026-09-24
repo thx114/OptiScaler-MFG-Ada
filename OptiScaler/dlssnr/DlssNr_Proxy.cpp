@@ -7,6 +7,7 @@
 #include <Logger.h>
 #include <proxies/NVNGX_Proxy.h>
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 namespace
@@ -27,6 +28,14 @@ void SetFloat(NVSDK_NGX_Parameter* params, const char* name, float value) { para
 // upscaler lives on. These counters deliberately survive feature-object recreation.
 std::atomic<uint64_t> g_nextCreateAttemptEpoch { 0 };
 std::atomic<unsigned> g_createFailureStreak { 0 };
+
+// The signature of the creation that last failed. Retries of the SAME signature are what the
+// cooldown paces; a genuine change (settings, resolution, device) starts fresh.
+std::mutex g_failedCreationMutex;
+DlssNr::Proxy::Settings g_failedSettings {};
+unsigned int g_failedWidth = 0, g_failedHeight = 0;
+ID3D12Device* g_failedDevice = nullptr;
+bool g_hasFailedSignature = false;
 
 struct ProxyState
 {
@@ -150,7 +159,17 @@ void Context::Impl::Release()
     lifetime.Collect();
 }
 
-void Context::RetryAfterFailure() { _impl->RetireState(); }
+void Context::RetryAfterFailure()
+{
+    // A manual retry forgets both the cooldown and the failed signature.
+    g_nextCreateAttemptEpoch.store(0, std::memory_order_relaxed);
+    g_createFailureStreak.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> failedLock(g_failedCreationMutex);
+        g_hasFailedSignature = false;
+    }
+    _impl->RetireState();
+}
 
 unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device, unsigned int width,
                                     unsigned int height, const Settings& settings, uint64_t submissionEpoch,
@@ -162,9 +181,23 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
         return 0;
     if (state.feature == nullptr)
     {
-        const uint64_t nextAttempt = g_nextCreateAttemptEpoch.load(std::memory_order_relaxed);
-        if (nextAttempt != 0 && submissionEpoch < nextAttempt)
-            return 0; // still inside the backoff window after the last failed creation
+        std::lock_guard<std::mutex> failedLock(g_failedCreationMutex);
+        if (g_hasFailedSignature && g_failedSettings == settings && g_failedWidth == width &&
+            g_failedHeight == height && g_failedDevice == device)
+        {
+            // Same shape as a creation that already failed this session: only the cooldown
+            // decides whether another attempt is due.
+            const uint64_t nextAttempt = g_nextCreateAttemptEpoch.load(std::memory_order_relaxed);
+            if (nextAttempt != 0 && submissionEpoch < nextAttempt)
+                return 0;
+        }
+        else
+        {
+            // A genuine change starts a fresh attempt immediately.
+            g_hasFailedSignature = false;
+            g_createFailureStreak.store(0, std::memory_order_relaxed);
+            g_nextCreateAttemptEpoch.store(0, std::memory_order_relaxed);
+        }
     }
     if ((!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device)) || !Context::Available())
         return 0;
@@ -249,18 +282,31 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
         {
             RetireState();
             state.failed = true;
-            // Escalating cooldown: 30 frames, then 60, 120 ... capped at 1920 (~a minute at
-            // thirty frames a second). One attempt per window, not one per presented frame.
+            // Escalating cooldown for the same signature: 600 frames, then 1200, 2400 ...
+            // capped at 38400 (roughly twenty minutes at thirty frames a second). The first
+            // failure is the only one a player should ever feel.
             const unsigned int streak = std::min(g_createFailureStreak.fetch_add(1) + 1, 7u);
-            g_nextCreateAttemptEpoch.store(submissionEpoch + (30ull << (streak - 1)),
-                                           std::memory_order_relaxed);
-            LOG_ERROR("DLSS-NR: CreateFeature(18) failed 0x{:X}; next attempt after {} frames",
-                      (unsigned int) created, 30u << (streak - 1));
+            const uint64_t cooldown = 600ull << (streak - 1);
+            g_nextCreateAttemptEpoch.store(submissionEpoch + cooldown, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> failedLock(g_failedCreationMutex);
+                g_failedSettings = settings;
+                g_failedWidth = width;
+                g_failedHeight = height;
+                g_failedDevice = device;
+                g_hasFailedSignature = true;
+            }
+            LOG_ERROR("DLSS-NR: CreateFeature(18) failed 0x{:X}; cooling down for {} frames",
+                      (unsigned int) created, cooldown);
             return (unsigned int) (created == NVSDK_NGX_Result_Success ? NVSDK_NGX_Result_Fail : created);
         }
 
         g_createFailureStreak.store(0, std::memory_order_relaxed);
         g_nextCreateAttemptEpoch.store(0, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> failedLock(g_failedCreationMutex);
+            g_hasFailedSignature = false;
+        }
 
         state.settings = settings;
         state.device = device;
