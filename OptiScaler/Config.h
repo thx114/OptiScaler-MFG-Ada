@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "SysUtils.h"
 #include "State.h"
@@ -861,10 +861,6 @@ class Config
     CustomOptional<float> FGDepthScaleMax { 10000.0f };
 
     // FSR-FG
-    // Forces the DWM composition path (WS_EX_LAYERED on the game window) while OptiScaler
-    // owns frame generation - smoother pacing, no reset flicker, up to one extra compositor
-    // frame of latency. See DwmComposition.h.
-    CustomOptional<bool> ForceDwmComposition { false };
     CustomOptional<bool> FGDebugView { false };
     CustomOptional<bool> FGDebugResetLines { false };
     CustomOptional<bool> FGDebugTearLines { false };

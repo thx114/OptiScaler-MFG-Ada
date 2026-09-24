@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "dx11_with_dx12_sc.h"
 
 #include <with_dx12/with_dx12.h>
@@ -9,7 +9,6 @@
 
 #include <Util.h>
 #include <Config.h>
-#include <DwmComposition.h>
 
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -305,14 +304,6 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
 
     if (!_InitInteropObjects())
         return DXGI_ERROR_DEVICE_REMOVED;
-
-    // The visible chain presents through this bridge while OptiScaler owns FG; honor the
-    // composed-presentation option here. Called per present, self-throttled on state change.
-    {
-        DXGI_SWAP_CHAIN_DESC fgDesc {};
-        if (SUCCEEDED(_fgSwapChain->GetDesc(&fgDesc)))
-            DwmComposition::Update(fgDesc.OutputWindow, true);
-    }
 
     auto dx11Index = _GetDx11BackBufferIndexForPresent();
 
