@@ -7624,7 +7624,23 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
     ImGui::PopItemWidth();
 
-    ImGui::SameLine(0.0f, 15.0f);
+    // Language switch lives on the bottom bar (leftmost) so it is findable in any language.
+    {
+        static const char* kLanguages[] = { "Auto", "English", "\xE4\xB8\xAD\xE6\x96\x87 (\xE7\xAE\x80\xE4\xBD\x93)" };
+        static const char* kLanguageValues[] = { "auto", "en", "zh" };
+        int langIndex = 0;
+        const auto langOpt = config->MenuLanguage.value_for_config();
+        const std::string langStr = langOpt.value_or("auto");
+        for (int i = 0; i < 3; ++i)
+            if (langStr == kLanguageValues[i])
+                langIndex = i;
+        ImGui::SetNextItemWidth(110.0f * ctx.menuResScale);
+        if (ImGui::Combo("\xE8\xAF\xAD\xE8\xA8\x80/Lang", &langIndex, kLanguages, 3))
+            config->MenuLanguage = std::string(kLanguageValues[langIndex]);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(I18n::Tr("Menu display language. Auto follows the system language.\nTakes effect immediately; the font refreshes on the next frame."));
+        ImGui::SameLine(0.0f, 15.0f);
+    }
 
     if (ImGui::Button(I18n::Tr("Save Settings")))
         config->SaveIni();
@@ -7643,25 +7659,6 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
         io.MouseDrawCursor = false;
         io.WantCaptureKeyboard = false;
         io.WantCaptureMouse = false;
-    }
-
-    // Language switch lives on the bottom bar so it is findable in any language.
-    ImGui::SameLine(0.0f, 15.0f);
-    {
-        static const char* kLanguages[] = { "Auto", "English", "\xE4\xB8\xAD\xE6\x96\x87 (\xE7\xAE\x80\xE4\xBD\x93)" };
-        static const char* kLanguageValues[] = { "auto", "en", "zh" };
-        int langIndex = 0;
-        const auto langOpt = config->MenuLanguage.value_for_config();
-        const std::string langStr = langOpt.value_or("auto");
-        for (int i = 0; i < 3; ++i)
-            if (langStr == kLanguageValues[i])
-                langIndex = i;
-        ImGui::SetNextItemWidth(120.0f);
-        if (ImGui::Combo("\xE8\xAF\xAD\xE8\xA8\x80/Lang", &langIndex, kLanguages, 3))
-            config->MenuLanguage = std::string(kLanguageValues[langIndex]);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(I18n::Tr("Menu display language. Auto follows the system language.\nTakes effect immediately; the font refreshes on the next frame."));
-        ImGui::SameLine();
     }
 
     auto winSize = ImGui::GetWindowSize();
@@ -8035,6 +8032,12 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
                              state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }
+
+    // Chinese labels are much shorter than the English ones; keep the auto-resized window
+    // from collapsing so the settings and the bottom bar keep room to breathe.
+    if (I18n::IsChinese())
+        ImGui::SetNextWindowSizeConstraints(ImVec2(46.0f * fontSize * ctx.menuResScale, 0.0f),
+                                            ImVec2(FLT_MAX, FLT_MAX));
 
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
     {
