@@ -319,7 +319,7 @@ void MenuCommon::ShowTooltip(const char* tip)
 void MenuCommon::ShowHelpMarker(const char* tip)
 {
     ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
+    ImGui::TextDisabled(I18n::Tr("(?)"));
     ShowTooltip(tip);
 }
 
@@ -843,7 +843,7 @@ void MenuCommon::PopulateCombo(const std::string& name, TStorage& currentValue,
 
             // Show tooltip for the individual item if it exists
             if (!opt.tooltip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", opt.tooltip.c_str());
+                ImGui::SetTooltip(I18n::Tr("%s"), opt.tooltip.c_str());
 
             if (opt.disabled)
                 ImGui::EndDisabled();
@@ -2814,11 +2814,11 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     // Display the active preset right next to the combo box instead of using a table
                     ImGui::SameLine();
                     if (state.currentFsr4Preset.has_value())
-                        ImGui::TextDisabled("(Active: %d)", state.currentFsr4Preset.value());
+                        ImGui::TextDisabled(I18n::Tr("(Active: %d)"), state.currentFsr4Preset.value());
                     else if (FSR4ModelSelection::IsInt8FsrHooked())
                         ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f)), "(Potential FSR3 fallback)");
                     else
-                        ImGui::TextDisabled("(Failed to hook)");
+                        ImGui::TextDisabled(I18n::Tr("(Failed to hook)"));
                 }
 
                 if (majorFsrVersion >= 3)
@@ -5142,22 +5142,22 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 
                             if (ImGui::IsItemHovered() && !flag.description.empty())
                             {
-                                ImGui::SetTooltip("%s", flag.description.c_str());
+                                ImGui::SetTooltip(I18n::Tr("%s"), flag.description.c_str());
                             }
                         }
                     };
 
-                    ImGui::TextDisabled("Common");
+                    ImGui::TextDisabled(I18n::Tr("Common"));
                     render_flags(common_flags);
 
                     ImGui::Spacing();
-                    ImGui::TextDisabled("Uncommon");
+                    ImGui::TextDisabled(I18n::Tr("Uncommon"));
                     render_flags(uncommon_flags);
 
                     if (config->NvngxFGShowDebug.value_or_default())
                     {
                         ImGui::Spacing();
-                        ImGui::TextDisabled("Debug");
+                        ImGui::TextDisabled(I18n::Tr("Debug"));
                         render_flags(debug_flags);
                     }
                 }
@@ -5773,9 +5773,9 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
 
         float featuresCurrentSharpness = currentFeature->Sharpness();
         if (featuresCurrentSharpness > 0.0f)
-            ImGui::TextDisabled("(Current sharpness: %.3f)", featuresCurrentSharpness);
+            ImGui::TextDisabled(I18n::Tr("(Current sharpness: %.3f)"), featuresCurrentSharpness);
         else
-            ImGui::TextDisabled("(Current sharpness: disabled)");
+            ImGui::TextDisabled(I18n::Tr("(Current sharpness: disabled)"));
 
         ImGui::BeginDisabled(!config->OverrideSharpness.value_or_default());
 
@@ -6363,7 +6363,7 @@ void MenuCommon::RenderMagnifierSettings(RenderMenuContext& ctx)
                 config->MagnifierStaticPosY = 50.0f;
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("(Currently following cursor)");
+            ImGui::TextDisabled(I18n::Tr("(Currently following cursor)"));
 
             float offsetX = config->MagnifierCursorOffsetX.value_or_default();
             if (ImGui::SliderFloat("Cursor Offset X", &offsetX, -300.0f, 300.0f, "%.0f px"))
@@ -6548,21 +6548,6 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
     {
         ScopedIndent indent {};
         ImGui::Spacing();
-
-        {
-            static const char* kLanguages[] = { "Auto", "English", "\xE4\xB8\xAD\xE6\x96\x87 (\xE7\xAE\x80\xE4\xBD\x93)" };
-            static const char* kLanguageValues[] = { "auto", "en", "zh" };
-            int langIndex = 0;
-            const auto langOpt = config->MenuLanguage.value_for_config();
-            const std::string langStr = langOpt.value_or("auto");
-            for (int i = 0; i < 3; ++i)
-                if (langStr == kLanguageValues[i])
-                    langIndex = i;
-            if (ImGui::Combo(I18n::Tr("Language"), &langIndex, kLanguages, 3))
-                config->MenuLanguage = std::string(kLanguageValues[langIndex]);
-            ShowHelpMarker(I18n::Tr("Menu display language. Auto follows the system language.\nTakes effect immediately; the font refreshes on the next frame."));
-            ImGui::Spacing();
-        }
 
         bool lightTheme = config->LightTheme.value_or_default();
 
@@ -7505,12 +7490,12 @@ void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
             ImGui::Text(I18n::Tr("Upscaler"));
 
             ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
+            ImGui::TextDisabled(I18n::Tr("(?)"));
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !state.detailedGpuTimes.empty())
             {
                 ImGui::BeginTooltip();
 
-                ImGui::TextDisabled("Per shader breakdown:");
+                ImGui::TextDisabled(I18n::Tr("Per shader breakdown:"));
                 if (ImGui::BeginTable("ShaderTimes", 2, ImGuiTableFlags_SizingStretchProp))
                 {
                     bool hasExtra = false;
@@ -7539,9 +7524,9 @@ void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
                         ImGui::TableNextRow();
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        ImGui::TextDisabled("Extra shaders:");
+                        ImGui::TextDisabled(I18n::Tr("Extra shaders:"));
                         ImGui::TableNextColumn();
-                        ImGui::TextDisabled("");
+                        ImGui::TextDisabled(I18n::Tr(""));
                         for (auto& [name, time, includedInUpscalerTime] : state.detailedGpuTimes)
                         {
                             if (includedInUpscalerTime)
@@ -7658,6 +7643,25 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
         io.MouseDrawCursor = false;
         io.WantCaptureKeyboard = false;
         io.WantCaptureMouse = false;
+    }
+
+    // Language switch lives on the bottom bar so it is findable in any language.
+    ImGui::SameLine(0.0f, 15.0f);
+    {
+        static const char* kLanguages[] = { "Auto", "English", "\xE4\xB8\xAD\xE6\x96\x87 (\xE7\xAE\x80\xE4\xBD\x93)" };
+        static const char* kLanguageValues[] = { "auto", "en", "zh" };
+        int langIndex = 0;
+        const auto langOpt = config->MenuLanguage.value_for_config();
+        const std::string langStr = langOpt.value_or("auto");
+        for (int i = 0; i < 3; ++i)
+            if (langStr == kLanguageValues[i])
+                langIndex = i;
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::Combo("\xE8\xAF\xAD\xE8\xA8\x80/Lang", &langIndex, kLanguages, 3))
+            config->MenuLanguage = std::string(kLanguageValues[langIndex]);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(I18n::Tr("Menu display language. Auto follows the system language.\nTakes effect immediately; the font refreshes on the next frame."));
+        ImGui::SameLine();
     }
 
     auto winSize = ImGui::GetWindowSize();

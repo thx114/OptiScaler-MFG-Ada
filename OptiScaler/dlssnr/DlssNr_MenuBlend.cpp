@@ -28,7 +28,7 @@ void RenderBlend(Config* config, float menuResScale)
         config->DlssNrTransferStrength = transfer;
 
     ImGui::SameLine();
-    if (ImGui::SmallButton("Reset##detail"))
+    if (ImGui::SmallButton(I18n::Tr("Reset##detail")))
         config->DlssNrTransferStrength = 1.0f;
 
     HelpMarker("0 = no detail change. 1 = normal.");
@@ -38,7 +38,7 @@ void RenderBlend(Config* config, float menuResScale)
         config->DlssNrColourStrength = colour;
 
     ImGui::SameLine();
-    if (ImGui::SmallButton("Reset##colour"))
+    if (ImGui::SmallButton(I18n::Tr("Reset##colour")))
         config->DlssNrColourStrength = 1.0f;
 
     HelpMarker("0 = game colours. 1 = model colours. Above 1 boosts saturation.");
@@ -80,7 +80,7 @@ void RenderBlend(Config* config, float menuResScale)
         config->DlssNrMaxRatio = maxRatio;
 
     ImGui::SameLine();
-    if (ImGui::SmallButton("Reset##guard"))
+    if (ImGui::SmallButton(I18n::Tr("Reset##guard")))
         config->DlssNrMaxRatio = 2.0f;
 
     HelpMarker("Limit pixel brightening and darkening.");

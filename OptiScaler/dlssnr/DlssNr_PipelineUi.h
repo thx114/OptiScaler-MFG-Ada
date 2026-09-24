@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <imgui/imgui.h>
 #include <algorithm>
@@ -42,13 +42,13 @@ inline const char* SectionName(Section section)
     switch (section)
     {
     case Section::Placement:
-        return "Placement";
+        return I18n::Tr("Placement");
     case Section::Input:
-        return "Input";
+        return I18n::Tr("Input");
     case Section::Model:
-        return "Model passes";
+        return I18n::Tr("Model passes");
     case Section::Blend:
-        return "Apply NR edit";
+        return I18n::Tr("Apply NR edit");
     }
     return "";
 }
@@ -78,7 +78,7 @@ inline void DrawTimingBar(double nrMs, double frameMs)
 {
     if (!std::isfinite(nrMs) || nrMs < 0.0 || !std::isfinite(frameMs) || frameMs <= 0.0)
     {
-        ImGui::TextDisabled("Waiting for frame timing.");
+        ImGui::TextDisabled(I18n::Tr("Waiting for frame timing."));
         return;
     }
     const double remaining = std::max(frameMs - nrMs, 0.0);
@@ -98,9 +98,9 @@ inline void DrawTimingBar(double nrMs, double frameMs)
                             ImGui::GetColorU32(ImGuiCol_Button));
     ImGui::Dummy(size);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("NR GPU time versus frame interval. Work can overlap.");
+        ImGui::SetTooltip(I18n::Tr("NR GPU time versus frame interval. Work can overlap."));
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("Rendered frame: %.2f ms%s", frameMs,
+    ImGui::TextDisabled(I18n::Tr("Rendered frame: %.2f ms%s"), frameMs,
                         overlapping ? " (NR overlaps/exceeds this interval)" : "");
     ImGui::PopTextWrapPos();
 }
@@ -138,33 +138,37 @@ inline void Draw(const View& view, Section& selected)
     const auto connect = [&](int from, int to) { edges.push_back({ from, to }); };
     const auto prepare = [&](int lane, int row)
     {
-        return add(lane, row, "Prepare NR input", "HDR / exposure / " + std::to_string(view.scalePercent) + "%",
+        return add(lane, row, I18n::Tr("Prepare NR input"),
+                   I18n::Tr("HDR / exposure / ") + std::to_string(view.scalePercent) + "%",
                    (int) Section::Input);
     };
     const auto model = [&](int lane, int row)
     {
-        return add(lane, row, "NR model",
-                   std::to_string(view.passes) + (view.passes == 1 ? " pass" : " passes"),
+        return add(lane, row, I18n::Tr("NR model"),
+                   std::to_string(view.passes)
+                       + (view.passes == 1 ? I18n::Tr(" pass") : I18n::Tr(" passes")),
                    (int) Section::Model);
     };
     const auto apply = [&](int row)
     {
-        return add(0, row, "Apply NR edit", view.applyModel ? "Strength / skin" : "Edit hidden; model runs",
+        return add(0, row, I18n::Tr("Apply NR edit"),
+                   view.applyModel ? I18n::Tr("Strength / skin") : I18n::Tr("Edit hidden; model runs"),
                    (int) Section::Blend);
     };
     const auto upscale = [&](int lane, int row)
     {
-        return add(lane, row, view.rayReconstruction ? "RR + Super Resolution" : "Super Resolution",
-                   split ? "Clean game image" : "Game upscaler");
+        return add(lane, row, view.rayReconstruction ? I18n::Tr("RR + Super Resolution") : I18n::Tr("Super Resolution"),
+                   split ? I18n::Tr("Clean game image") : I18n::Tr("Game upscaler"));
     };
-    const auto effects = [&](int lane, int row) { return add(lane, row, "Game effects + HUD", "Game rendering"); };
-    const int input = add(0, 0, "Game input", "Placement / routing", (int) Section::Placement);
+    const auto effects = [&](int lane, int row) { return add(lane, row, I18n::Tr("Game effects + HUD"), I18n::Tr("Game rendering")); };
+    const int input = add(0, 0, I18n::Tr("Game input"), I18n::Tr("Placement / routing"), (int) Section::Placement);
     int last = input, lastRow = 0;
     if (split)
     {
         // Only a separately carried edit branches. Both paths reunite at its application point.
         const int prep = prepare(-1, 1), nr = model(-1, 2);
-        const int edit = add(-1, 3, "Upscale NR edit", std::string("Separate ") + view.privateUpscaler + " pass (no RR)");
+        const int edit = add(-1, 3, I18n::Tr("Upscale NR edit"),
+                             std::string(I18n::Tr("Separate ")) + view.privateUpscaler + I18n::Tr(" pass (no RR)"));
         int game = upscale(1, 1);
         connect(input, prep);
         connect(prep, nr);
@@ -207,7 +211,7 @@ inline void Draw(const View& view, Section& selected)
         connect(last, fx);
         last = fx;
     }
-    connect(last, add(0, ++lastRow, "Game output", "FG / presentation"));
+    connect(last, add(0, ++lastRow, I18n::Tr("Game output"), I18n::Tr("FG / presentation")));
 
     // Wrap labels inside their nodes so a narrow overlay does not crop either branch.
     const float padding = ImGui::GetStyle().FramePadding.x + 4.0f;
@@ -290,11 +294,11 @@ inline void Draw(const View& view, Section& selected)
     };
     if (!view.enabled)
     {
-        tool("Prepare input", Section::Input);
+        tool(I18n::Tr("Prepare input"), Section::Input);
         ImGui::SameLine();
-        tool("Model passes", Section::Model);
+        tool(I18n::Tr("Model passes"), Section::Model);
         ImGui::SameLine();
-        tool("Apply edit", Section::Blend);
+        tool(I18n::Tr("Apply edit"), Section::Blend);
     }
     ImGui::PopID();
 }
