@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "DlssNr_Proxy.h"
 #include "DlssNr_GpuLifetime.h"
 #include "DlssNr_NgxDiagnostics.h"
@@ -6,6 +6,7 @@
 
 #include <Logger.h>
 #include <proxies/NVNGX_Proxy.h>
+#include <atomic>
 #include <vector>
 
 namespace
@@ -17,6 +18,15 @@ void SetUInt(NVSDK_NGX_Parameter* params, const char* name, unsigned int value) 
 void SetResource(NVSDK_NGX_Parameter* params, const char* name, ID3D12Resource* value) { params->Set(name, value); }
 
 void SetFloat(NVSDK_NGX_Parameter* params, const char* name, float value) { params->Set(name, value); }
+
+// Process-wide CreateFeature backoff. A failing NGX snippet used to retry as fast as the
+// caller re-entered, and feature-object recreation cleared the per-instance failed flag, so
+// the retry loop ran every few hundred milliseconds -- each round re-bootstrapping the NGX
+// session (which shares the game's app id) and re-scanning runtime candidate directories.
+// The churn cost real frame time and destabilized the very NGX session the game's own
+// upscaler lives on. These counters deliberately survive feature-object recreation.
+std::atomic<uint64_t> g_nextCreateAttemptEpoch { 0 };
+std::atomic<unsigned> g_createFailureStreak { 0 };
 
 struct ProxyState
 {
@@ -150,6 +160,12 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
     TickRetired(submissionEpoch);
     if (state.failed || !cmdList || !device || !width || !height)
         return 0;
+    if (state.feature == nullptr)
+    {
+        const uint64_t nextAttempt = g_nextCreateAttemptEpoch.load(std::memory_order_relaxed);
+        if (nextAttempt != 0 && submissionEpoch < nextAttempt)
+            return 0; // still inside the backoff window after the last failed creation
+    }
     if ((!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device)) || !Context::Available())
         return 0;
     if (state.feature &&
@@ -233,9 +249,18 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
         {
             RetireState();
             state.failed = true;
-            LOG_ERROR("DLSS-NR: CreateFeature(18) failed 0x{:X}", (unsigned int) created);
+            // Escalating cooldown: 30 frames, then 60, 120 ... capped at 1920 (~a minute at
+            // thirty frames a second). One attempt per window, not one per presented frame.
+            const unsigned int streak = std::min(g_createFailureStreak.fetch_add(1) + 1, 7u);
+            g_nextCreateAttemptEpoch.store(submissionEpoch + (30ull << (streak - 1)),
+                                           std::memory_order_relaxed);
+            LOG_ERROR("DLSS-NR: CreateFeature(18) failed 0x{:X}; next attempt after {} frames",
+                      (unsigned int) created, 30u << (streak - 1));
             return (unsigned int) (created == NVSDK_NGX_Result_Success ? NVSDK_NGX_Result_Fail : created);
         }
+
+        g_createFailureStreak.store(0, std::memory_order_relaxed);
+        g_nextCreateAttemptEpoch.store(0, std::memory_order_relaxed);
 
         state.settings = settings;
         state.device = device;
