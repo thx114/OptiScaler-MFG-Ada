@@ -366,6 +366,13 @@ class State
     bool libxessExists = false;
     bool fsrHooks = false;
 
+    // Latest real frame handed off through OptiScalerSubmitFinalSceneD3D11.
+    // The owned SRV and its dimensions are valid while finalSceneFrame advances.
+    ID3D11ShaderResourceView* finalSceneSrv = nullptr;
+    UINT64 finalSceneFrame = 0;
+    UINT finalSceneWidth = 0;
+    UINT finalSceneHeight = 0;
+
     IFeature* currentFeature = nullptr;
     IFGFeature_Dx12* currentFG = nullptr;
     IDXGISwapChain* currentSwapchain = nullptr;

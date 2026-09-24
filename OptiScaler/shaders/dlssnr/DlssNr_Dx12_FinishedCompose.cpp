@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "DlssNr_Dx12_State.h"
 
 auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE colorSpace,
@@ -12,7 +12,16 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     }
     LateContext::ComPtr<ID3D12Device> currentDevice;
     if (FAILED(queue->GetDevice(IID_PPV_ARGS(&currentDevice))) || currentDevice != late.device)
+    {
+        static bool reportedDeviceMismatch = false;
+        if (!reportedDeviceMismatch)
+        {
+            reportedDeviceMismatch = true;
+            LOG_INFO("DLSS-NR finished picture: device mismatch (late device {}, queue device {}, gameFrameHandoff {})",
+                     (void*) late.device.Get(), (void*) currentDevice.Get(), gameFrameHandoff);
+        }
         return false;
+    }
     ID3D12CommandQueue* realQueue = nullptr;
     if (!Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**) &realQueue))
         realQueue = queue;
@@ -33,10 +42,24 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     const bool residualOnly = DlssNr::ResolvePlacement(
         cfg.DlssNrRunBeforeSr.value_or_default(), cfg.DlssNrDeferredDlss.value_or_default(),
         cfg.DlssNrResidualAcrossRr.value_or_default(), true).deferred;
+    // Edge-triggered bridge diagnostics: log only on decision changes so a steady state
+    // stays quiet while every transition (FG on/off, resizes, slot starvation) is visible.
+    static long long bridgeCalls = 0;
+    static int lastBridgeDecision = -1;
+    static bool lastBridgeHandoff = false;
+    ++bridgeCalls;
+    if (gameFrameHandoff != lastBridgeHandoff)
+    {
+        lastBridgeHandoff = gameFrameHandoff;
+        LOG_INFO("DLSS-NR finished picture: handoff {} first call at epoch {} (device {}, format {})",
+                 gameFrameHandoff, (unsigned long long) epoch, (void*) late.device.Get(), (UINT) desc.Format);
+    }
+    unsigned pendingSlots = 0, readySlots = 0, shapeMismatch = 0;
     for (auto& slot : late.slots)
     {
         if (!slot.pending || !slot.submitted)
             continue;
+        ++pendingSlots;
         // Native FG's internal Present counter includes generated frames and is not an app-frame identity.
         if (!gameFrameHandoff && (epoch < slot.frame.SubmissionEpoch || epoch - slot.frame.SubmissionEpoch > 1))
         {
@@ -54,9 +77,38 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             }
             continue;
         }
-        if (slot.residualOnly == residualOnly && slot.frame.OutputWidth == desc.Width &&
-            slot.frame.OutputHeight == desc.Height && (!latest || slot.serial > latest->serial))
+        ++readySlots;
+        // The DLSS wrapper evaluates inside a small soft margin, so the NGX output (and thus the
+        // stamped slot dims) can sit a couple of pixels under the presented picture. Guide scales
+        // absorb that difference; only residual copies need the strict same-size guarantee.
+        const bool slotNearPicture = !slot.residualOnly &&
+                                     std::abs((int) slot.frame.OutputWidth - (int) desc.Width) <= 8 &&
+                                     std::abs((int) slot.frame.OutputHeight - (int) desc.Height) <= 8;
+        if (slot.residualOnly == residualOnly &&
+            (slotNearPicture || (slot.frame.OutputWidth == desc.Width && slot.frame.OutputHeight == desc.Height)) &&
+            (!latest || slot.serial > latest->serial))
             latest = &slot;
+        else if (slot.residualOnly != residualOnly || slot.frame.OutputWidth != desc.Width ||
+                 slot.frame.OutputHeight != desc.Height)
+        {
+            ++shapeMismatch;
+            static bool reportedFirstMismatch = false;
+            if (!reportedFirstMismatch)
+            {
+                reportedFirstMismatch = true;
+                LOG_INFO("DLSS-NR finished picture: first shape mismatch - slot (residualOnly {}, {}x{}) vs picture (residualOnly {}, {}x{})",
+                         slot.residualOnly, slot.frame.OutputWidth, slot.frame.OutputHeight, residualOnly,
+                         (UINT) desc.Width, (UINT) desc.Height);
+            }
+        }
+    }
+    const int bridgeDecision = latest ? 1 : readySlots > 0 ? 2 : pendingSlots > 0 ? 3 : 0;
+    if (bridgeDecision != lastBridgeDecision)
+    {
+        lastBridgeDecision = bridgeDecision;
+        LOG_INFO("DLSS-NR finished picture: decision {} at epoch {} call {} (pending {}, ready {}, shapeMismatch {}, handoff {})",
+                 bridgeDecision, (unsigned long long) epoch, bridgeCalls, pendingSlots, readySlots, shapeMismatch,
+                 gameFrameHandoff);
     }
     // A tuning change may need a few model warm-up frames. Keep displaying the last
     // held edit in that gap rather than exposing live/rotating game backbuffers.

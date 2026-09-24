@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "DLSSG_Dx12.h"
 #include "Kcd2Hdr.h"
@@ -168,7 +168,10 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
     if (StreamlineProxy::DLSSGGetState()(viewport, dlssgState, &dlssgOptions) == sl::Result::eOk)
     {
         _maxInterpolationCount = ResolveDlssgRuntimeMaximum(dlssgState.numFramesToGenerateMax);
-        LOG_INFO("Max supported interpolations: {}", dlssgState.numFramesToGenerateMax);
+        _runtimeReportedMaxInterpolation = static_cast<int>(dlssgState.numFramesToGenerateMax);
+        _runtimeReportedStatus = static_cast<unsigned>(dlssgState.status);
+        LOG_INFO("Max supported interpolations: {} status {:X}", dlssgState.numFramesToGenerateMax,
+                 _runtimeReportedStatus);
 
         _supportsDMFG = dlssgState.bIsDynamicMFGSupported == sl::Boolean::eTrue;
     }
@@ -286,7 +289,10 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
     if (StreamlineProxy::DLSSGGetState()(viewport, dlssgState, &dlssgOptions) == sl::Result::eOk)
     {
         _maxInterpolationCount = ResolveDlssgRuntimeMaximum(dlssgState.numFramesToGenerateMax);
-        LOG_INFO("Max supported interpolations: {}", dlssgState.numFramesToGenerateMax);
+        _runtimeReportedMaxInterpolation = static_cast<int>(dlssgState.numFramesToGenerateMax);
+        _runtimeReportedStatus = static_cast<unsigned>(dlssgState.status);
+        LOG_INFO("Max supported interpolations: {} status {:X}", dlssgState.numFramesToGenerateMax,
+                 _runtimeReportedStatus);
 
         _supportsDMFG = dlssgState.bIsDynamicMFGSupported == sl::Boolean::eTrue;
     }
@@ -431,8 +437,13 @@ bool DLSSG_Dx12::Dispatch()
              magic_enum::enum_name(options.mode), options.numFramesToGenerate, options.structVersion,
              State::Instance().externalFrameGeneration);
     auto dlssgSetOptionsResult = StreamlineProxy::DLSSGSetOptions()(viewport, options);
-    LOG_INFO("SetOptions after: result {} acceptedNum {}",
-             magic_enum::enum_name(dlssgSetOptionsResult), options.numFramesToGenerate);
+    // "num" is our request, not the runtime's acceptance. The runtime clamps
+    // numFramesToGenerate to its own numFramesToGenerateMax and still returns eOk, so a
+    // request above the effective maximum silently drops back to 2x. Reading it as
+    // acceptance here is what made a 2x session look like a 5x one in the logs.
+    LOG_INFO("SetOptions after: result {} requestedNum {} runtimeMax {} runtimeReportedMax {} status {:X}",
+             magic_enum::enum_name(dlssgSetOptionsResult), options.numFramesToGenerate,
+             _maxInterpolationCount, _runtimeReportedMaxInterpolation, _runtimeReportedStatus);
 
     if (!CommitDlssgDispatchOptions(dlssgSetOptionsResult, options, _framesToInterpolate))
         return false;
