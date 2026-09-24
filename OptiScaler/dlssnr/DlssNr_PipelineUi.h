@@ -6,6 +6,7 @@
 #include <vector>
 #include <utility>
 #include <cmath>
+#include <Localization.h>
 
 namespace DlssNr::PipelineUi
 {
@@ -58,7 +59,7 @@ inline bool CheckboxWrapped(const char* label, bool* value, float width)
     ImGui::PushID(label);
     ImGui::BeginGroup();
     const float right = ImGui::GetCursorPosX() + width;
-    bool changed = ImGui::Checkbox("##toggle", value);
+    bool changed = ImGui::Checkbox(I18n::Tr("##toggle"), value);
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::PushTextWrapPos(right);
     ImGui::TextUnformatted(label);
@@ -82,7 +83,7 @@ inline void DrawTimingBar(double nrMs, double frameMs)
     }
     const double remaining = std::max(frameMs - nrMs, 0.0);
     const bool overlapping = nrMs > frameMs;
-    ImGui::TextWrapped("NR %.2f ms  |  Rest of frame ~%.2f ms", nrMs, remaining);
+    ImGui::TextWrapped(I18n::Tr("NR %.2f ms  |  Rest of frame ~%.2f ms"), nrMs, remaining);
     const ImVec2 at = ImGui::GetCursorScreenPos();
     const ImVec2 size(std::max(ImGui::GetContentRegionAvail().x, 1.0f), ImGui::GetFontSize());
     const float split = size.x * static_cast<float>(nrMs / std::max(frameMs, nrMs));

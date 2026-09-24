@@ -4,6 +4,7 @@
 #include <Config.h>
 #include <menu/menu_common.h>
 #include <algorithm>
+#include <Localization.h>
 
 namespace DlssNr::MenuSections
 {
@@ -17,7 +18,7 @@ void RenderBlend(Config* config, float menuResScale)
         ImGui::BeginDisabled(State::Instance().swapchainApi == API::Vulkan ||
                              (feature && feature->GetUpscalerType() == Upscaler::DLSSD));
         bool hdrTransfer = config->DlssNrHdrTransfer.value_or_default();
-        if (ImGui::Checkbox("Match HDR brightness response (experimental)", &hdrTransfer))
+        if (ImGui::Checkbox(I18n::Tr("Match HDR brightness response (experimental)"), &hdrTransfer))
             config->DlssNrHdrTransfer = hdrTransfer;
         ImGui::EndDisabled();
         HelpMarker("Match early NR brightness changes to the finished HDR image. Adds GPU work; unreliable fits fall back.");
@@ -42,14 +43,14 @@ void RenderBlend(Config* config, float menuResScale)
 
     HelpMarker("0 = game colours. 1 = model colours. Above 1 boosts saturation.");
 
-    if (ImGui::TreeNode("Skin and environment (final edit)"))
+    if (ImGui::TreeNode(I18n::Tr("Skin and environment (final edit)")))
     {
         bool filter = config->DlssNrSkinProtection.value_or_default();
-        if (ImGui::Checkbox("Separate skin / environment controls", &filter))
+        if (ImGui::Checkbox(I18n::Tr("Separate skin / environment controls"), &filter))
             config->DlssNrSkinProtection = filter;
         ImGui::BeginDisabled(!filter);
         bool tone = config->DlssNrSkinToneEnabled.value_or_default();
-        if (ImGui::Checkbox("Allow skin tone / colour changes", &tone))
+        if (ImGui::Checkbox(I18n::Tr("Allow skin tone / colour changes"), &tone))
             config->DlssNrSkinToneEnabled = tone;
         HelpMarker("Allow skin colour changes while retaining separate detail control.");
         const auto slider = [](const char* label, auto& option)
@@ -66,7 +67,7 @@ void RenderBlend(Config* config, float menuResScale)
         slider("Environment detail / lighting", config->DlssNrEnvironmentDetail);
         slider("Environment colour", config->DlssNrEnvironmentColour);
         bool preview = config->DlssNrShowSkinMask.value_or_default();
-        if (ImGui::Checkbox("Preview colour-based mask", &preview))
+        if (ImGui::Checkbox(I18n::Tr("Preview colour-based mask"), &preview))
             config->DlssNrShowSkinMask = preview;
         ImGui::EndDisabled();
         ImGui::TreePop();
@@ -88,14 +89,14 @@ void RenderBlend(Config* config, float menuResScale)
 void RenderInspect(Config* config, float menuResScale)
 {
     bool held = config->DlssNrHoldFrame.value_or_default();
-    if (ImGui::Checkbox("Hold frame", &held))
+    if (ImGui::Checkbox(I18n::Tr("Hold frame"), &held))
         config->DlssNrHoldFrame = held;
 
     HelpMarker("Freeze a frame for NR tuning. Later game effects may update; temporal behaviour is not representative.");
 
     static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
     int compare = (int) config->DlssNrCompare.value_or_default();
-    if (ImGui::Combo("Compare", &compare, compareNames, IM_ARRAYSIZE(compareNames)))
+    if (ImGui::Combo(I18n::Tr("Compare"), &compare, compareNames, IM_ARRAYSIZE(compareNames)))
         config->DlssNrCompare = (uint32_t) compare;
 
     HelpMarker("Compare the original and NR output.");
@@ -103,12 +104,12 @@ void RenderInspect(Config* config, float menuResScale)
     if (compare != 0)
     {
         bool swap = config->DlssNrCompareSwap.value_or_default();
-        if (ImGui::Checkbox("Swap sides", &swap))
+        if (ImGui::Checkbox(I18n::Tr("Swap sides"), &swap))
             config->DlssNrCompareSwap = swap;
 
 
         bool tags = config->DlssNrCompareTags.value_or_default();
-        if (ImGui::Checkbox("Label the sides", &tags))
+        if (ImGui::Checkbox(I18n::Tr("Label the sides"), &tags))
             config->DlssNrCompareTags = tags;
 
 
@@ -142,7 +143,7 @@ void RenderInspect(Config* config, float menuResScale)
     static const char* debugNames[] = { "Off", "Proxy (what the model sees)", "Model output (raw)",
                                         "Difference (amplified)" };
     int debugView = (int) config->DlssNrDebugView.value_or_default();
-    if (ImGui::Combo("Debug view", &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
+    if (ImGui::Combo(I18n::Tr("Debug view"), &debugView, debugNames, IM_ARRAYSIZE(debugNames)))
         config->DlssNrDebugView = (uint32_t) debugView;
 
     HelpMarker("Difference is amplified 20x. Grey means unchanged.");

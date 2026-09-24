@@ -8,6 +8,7 @@
 #include "DlssNr_PipelineUi.h"
 #include <Config.h>
 #include <menu/menu_common.h>
+#include <Localization.h>
 
 namespace DlssNr::MenuSections
 {
@@ -20,13 +21,13 @@ void RenderPlacement(Config* config, float menuResScale)
     {
         const auto feature = State::Instance().currentFeature;
         if (State::Instance().swapchainApi == API::Vulkan)
-            ImGui::TextWrapped("%s", DlssNr::FinishedVkStatus().c_str());
+            ImGui::TextWrapped(I18n::Tr("%s"), DlssNr::FinishedVkStatus().c_str());
         else if (feature && (feature->Api() != API::DX12 ||
                              (feature->IsWithDx12() && State::Instance().swapchainApi != API::DX11 &&
                               State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx11wDx12)))
-            ImGui::TextWrapped("This option needs DirectX 12 or a DirectX 11 upscaler marked w/Dx12.");
+            ImGui::TextWrapped(I18n::Tr("This option needs DirectX 12 or a DirectX 11 upscaler marked w/Dx12."));
         else
-            ImGui::TextWrapped("%s", DlssNr::FinishedPictureStatus().c_str());
+            ImGui::TextWrapped(I18n::Tr("%s"), DlssNr::FinishedPictureStatus().c_str());
     }
 
     const auto placement = ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
@@ -34,7 +35,7 @@ void RenderPlacement(Config* config, float menuResScale)
                                             config->DlssNrResidualAcrossRr.value_or_default(), finishedPicture);
     if (placement.deferred)
     {
-        ImGui::TextWrapped("Private upscale: %s", DlssNr::DeferredDlssStatus().c_str());
+        ImGui::TextWrapped(I18n::Tr("Private upscale: %s"), DlssNr::DeferredDlssStatus().c_str());
         ImGui::TextWrapped(finishedPicture
             ? "The game processes clean input through SR/RR and its effects. The separately upscaled NR edit is applied to the finished picture."
             : "The game processes clean input through SR/RR. The separately upscaled NR edit is applied after upscale.");
@@ -67,17 +68,17 @@ void RenderStatus(Config* config, float menuResScale)
 
         if (reason[0] != 0)
         {
-            ImGui::TextWrapped("%s", reason);
+            ImGui::TextWrapped(I18n::Tr("%s"), reason);
             ImGui::SameLine();
 
             if (nativeVk)
-                ImGui::TextUnformatted("Restart the game to retry native Vulkan NR.");
+                ImGui::TextUnformatted(I18n::Tr("Restart the game to retry native Vulkan NR."));
             else if (ImGui::SmallButton("Retry"))
                 DlssNr::RetryAfterFailure();
 
             if (!config->DlssNrRunBeforeSr.value_or_default() && strstr(reason, "display resolution") != nullptr)
             {
-                if (ImGui::Button("Switch to Pre-SR (Generate model before upscale)"))
+                if (ImGui::Button(I18n::Tr("Switch to Pre-SR (Generate model before upscale)")))
                 {
                     config->DlssNrRunBeforeSr = true;
                     DlssNr::RetryAfterFailure();
@@ -86,16 +87,16 @@ void RenderStatus(Config* config, float menuResScale)
         }
         else if (feature && feature->Api() == API::DX11 && !feature->IsWithDx12())
         {
-            ImGui::TextWrapped("NR needs the D3D12 bridge on D3D11. Choose an upscaler marked w/Dx12 and restart.");
+            ImGui::TextWrapped(I18n::Tr("NR needs the D3D12 bridge on D3D11. Choose an upscaler marked w/Dx12 and restart."));
         }
         else if (nativeVk && ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
                      config->DlssNrDeferredDlss.value_or_default(),
                      config->DlssNrResidualAcrossRr.value_or_default(), finishedPicture).deferred)
         {
-            ImGui::TextWrapped("The private edit-upscale path requires DirectX 12 or its bridge. Disable separate edit upscaling to use native Vulkan NR.");
+            ImGui::TextWrapped(I18n::Tr("The private edit-upscale path requires DirectX 12 or its bridge. Disable separate edit upscaling to use native Vulkan NR."));
         }
         else if (enabled)
-            ImGui::TextUnformatted("Waiting for the upscaler to run.");
+            ImGui::TextUnformatted(I18n::Tr("Waiting for the upscaler to run."));
     }
     else
     {
@@ -116,12 +117,12 @@ void RenderStatus(Config* config, float menuResScale)
         ImGui::PushStyleColor(ImGuiCol_Text,
                               ImVec4(textColor.x * 0.55f, textColor.y * 0.80f, textColor.z * 0.55f, textColor.w));
         if (ms.has_value())
-            ImGui::Text("Running%s - %.2f ms elapsed%s", vulkan ? " natively on Vulkan" : "", ms.value(), runSuffix);
+            ImGui::Text(I18n::Tr("Running%s - %.2f ms elapsed%s"), vulkan ? " natively on Vulkan" : "", ms.value(), runSuffix);
         else if (vulkan)
             // Measured but not yet read: the first few frames are still in the query ring.
-            ImGui::Text("Running natively on Vulkan - %llu frames%s", DlssNr::FramesVk(), runSuffix);
+            ImGui::Text(I18n::Tr("Running natively on Vulkan - %llu frames%s"), DlssNr::FramesVk(), runSuffix);
         else
-            ImGui::Text("Running.%s", runSuffix);
+            ImGui::Text(I18n::Tr("Running.%s"), runSuffix);
         ImGui::PopStyleColor();
 
         ImGui::SameLine();
