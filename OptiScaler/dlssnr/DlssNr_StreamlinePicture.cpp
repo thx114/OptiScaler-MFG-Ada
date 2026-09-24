@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "DlssNr_StreamlinePicture.h"
 #include "DlssNrFeature_Dx12.h"
 #include <Config.h>
@@ -103,9 +103,22 @@ template <bool Local> struct Hooks
 
 void* Wrap(const char* name, GetFunction getFunction, bool local)
 {
-    if (local && (!State::Instance().gameQuirks[GameQuirk::Kcd2NrBeforeFg] ||
-                  State::Instance().activeFgNvngx != FGNvngxReplacement::None))
-        return nullptr;
+    if (local)
+    {
+        // KCD2: finished-picture NR ahead of the game's own DLSSG presentation. The other case
+        // that presents through the local runtime is an OptiScaler-owned DLSSG output (MFG
+        // unlock): the compose must hook that presentation too, or the finished picture never
+        // composes and the feature sits "waiting" forever (ZZZ). Apply() re-checks the config on
+        // every present, so arming the hook costs nothing when NR is off.
+        const auto& state = State::Instance();
+        const bool kcd2 = state.gameQuirks[GameQuirk::Kcd2NrBeforeFg] &&
+                          state.activeFgNvngx == FGNvngxReplacement::None;
+        const bool dlssgOutput = state.activeFgOutput == FGOutput::DLSSG &&
+                                 Config::Instance()->DlssNrEnabled.value_or_default() &&
+                                 Config::Instance()->DlssNrFinishedPicture.value_or_default();
+        if (!kcd2 && !dlssgOutput)
+            return nullptr;
+    }
     return local ? Hooks<true>::Wrap(name, getFunction) : Hooks<false>::Wrap(name, getFunction);
 }
 }
