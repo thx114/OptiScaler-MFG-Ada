@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "Config.h"
 
@@ -693,6 +693,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             FontSize.set_from_config(readFloat("Menu", "FontSize"));
             TTFFontPath.set_from_config(readWString("Menu", "TTFFontPath"));
+            MenuLanguage.set_from_config(readString("Menu", "Language"));
 
             FGShortcutKey.set_from_config(readInt("Menu", "FGShortcutKey"));
 
@@ -1624,6 +1625,7 @@ bool Config::SaveIni()
         ini.SetValue("Menu", "FontSize", GetFloatValue(Instance()->FontSize.value_for_config()).c_str());
         ini.SetValue("Menu", "TTFFontPath",
                      wstring_to_string(Instance()->TTFFontPath.value_for_config_or(L"auto")).c_str());
+        ini.SetValue("Menu", "Language", Instance()->MenuLanguage.value_for_config_or("auto").c_str());
 
         ini.SetValue("Menu", "LightTheme", GetBoolValue(Instance()->LightTheme.value_for_config()).c_str());
         ini.SetValue("Menu", "OverlaysUseTheme", GetBoolValue(Instance()->OverlaysUseTheme.value_for_config()).c_str());
