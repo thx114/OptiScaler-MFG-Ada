@@ -149,7 +149,7 @@ void RenderModel(Config* config, float menuResScale)
         if (ImGui::Checkbox(I18n::Tr("Auto skin mask"), &mask))
             config->DlssNrPass2AutoMask = mask;
         ImGui::SameLine();
-        if (ImGui::SmallButton("Reset##mask"))
+        if (ImGui::SmallButton(I18n::Tr("Reset##mask")))
             config->DlssNrPass2AutoMask = std::optional<bool> {};
         ImGui::TreePop();
     }

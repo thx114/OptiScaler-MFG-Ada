@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "DlssNr.h"
 #include "DlssNrFeature_Vk.h"
@@ -98,20 +98,20 @@ void RenderInput(Config* config, float menuResScale)
             if (source == 1)
             {
                 if (!vk && ex.seenFrames == 0)
-                    ImGui::TextDisabled("Waiting for a frame...");
+                    ImGui::TextDisabled(I18n::Tr("Waiting for a frame..."));
                 else if (!haveExposure)
-                    ImGui::TextDisabled("No game exposure available. Using manual paper white.");
+                    ImGui::TextDisabled(I18n::Tr("No game exposure available. Using manual paper white."));
                 else if (vk)
-                    ImGui::TextDisabled("Using game exposure.");
+                    ImGui::TextDisabled(I18n::Tr("Using game exposure."));
                 else if (ex.exposure > 1e-6f)
                 {
                     const float trim = std::clamp(config->DlssNrWhitePointTrim.value_or_default(), 0.25f, 4.0f);
-                    ImGui::TextDisabled("Game exposure %.4f  ->  white point %.2f%s", ex.exposure,
+                    ImGui::TextDisabled(I18n::Tr("Game exposure %.4f  ->  white point %.2f%s"), ex.exposure,
                                         ex.preExposure / ex.exposure * trim,
                                         ex.offeredNow ? "" : "  (held: absent this frame)");
                 }
                 else
-                    ImGui::TextDisabled("Reading exposure...");
+                    ImGui::TextDisabled(I18n::Tr("Reading exposure..."));
             }
             else if (source == 2)
             {
@@ -120,17 +120,17 @@ void RenderInput(Config* config, float menuResScale)
                     const unsigned int watching = (unsigned int) DlssNr::ExposureScan::Report().size();
 
                     if (watching == 0)
-                        ImGui::TextDisabled("No exposure candidates found.");
+                        ImGui::TextDisabled(I18n::Tr("No exposure candidates found."));
                     else
-                        ImGui::TextDisabled("%u exposure candidates",
+                        ImGui::TextDisabled(I18n::Tr("%u exposure candidates"),
                                             watching);
                 }
                 else if (!haveAnchor)
-                    ImGui::TextDisabled("Exposure candidate found.");
+                    ImGui::TextDisabled(I18n::Tr("Exposure candidate found."));
             }
             else if (haveExposure)
             {
-                ImGui::TextDisabled("Game exposure is available.");
+                ImGui::TextDisabled(I18n::Tr("Game exposure is available."));
             }
         }
         const int wpSource = (int) config->DlssNrWhitePointSource.value_or_default();
@@ -152,7 +152,7 @@ void RenderInput(Config* config, float menuResScale)
                         liveScan, config->DlssNrScanInverted.value_or_default(),
                         config->DlssNrScanTrim.value_or_default());
 
-                    ImGui::TextDisabled("Scan %.5f  ->  white point %.2f   (%u point%s)", liveScan, w,
+                    ImGui::TextDisabled(I18n::Tr("Scan %.5f  ->  white point %.2f   (%u point%s)"), liveScan, w,
                                         (unsigned) anchors.size(), anchors.size() == 1 ? "" : "s");
                 }
             }
@@ -191,7 +191,7 @@ void RenderInput(Config* config, float menuResScale)
 
                 ImGui::SameLine();
 
-                if (ImGui::SmallButton("Reset##scantrim"))
+                if (ImGui::SmallButton(I18n::Tr("Reset##scantrim")))
                     config->DlssNrScanTrim = 1.0f;
 
                 HelpMarker("Adjust calibrated brightness. Anchoring resets Trim to 1.");
@@ -214,7 +214,7 @@ void RenderInput(Config* config, float menuResScale)
             }
 
             ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##wptrim"))
+            if (ImGui::SmallButton(I18n::Tr("Reset##wptrim")))
             {
                 if (ofScan)
                     config->DlssNrScanTrim = 1.0f;
@@ -271,7 +271,7 @@ void RenderInput(Config* config, float menuResScale)
                 HelpMarker("Save exposure and white point. Up to 8 calibration points.");
 
                 if (!isSource)
-                    ImGui::TextDisabled("Scanned exposure is not the selected white point source.");
+                    ImGui::TextDisabled(I18n::Tr("Scanned exposure is not the selected white point source."));
 
                 if (!anchors.empty())
                 {
@@ -292,7 +292,7 @@ void RenderInput(Config* config, float menuResScale)
                     for (size_t i = 0; i < anchors.size(); ++i)
                     {
                         ImGui::PushID((int) i);
-                        if (ImGui::SmallButton("x"))
+                        if (ImGui::SmallButton(I18n::Tr("x")))
                         {
                             DlssNr::ExposureScan::AnchorRemove((int) i);
                             config->DlssNrScanAnchors = DlssNr::ExposureScan::SerializeAnchors();
@@ -317,8 +317,7 @@ void RenderInput(Config* config, float menuResScale)
                         ImGui::PopID();
                     }
 
-                    ImGui::TextDisabled("Select a row to edit it; select it again"
-                                        " to deselect. > marks the active point.");
+                    ImGui::TextDisabled(I18n::Tr("Select a row to edit it; select it again"" to deselect. > marks the active point."));
                 }
                 if (anchors.size() == 1)
                 {
@@ -336,8 +335,8 @@ void RenderInput(Config* config, float menuResScale)
 
                     if (found.empty())
                     {
-                        ImGui::TextDisabled("%s",
-                                            why != nullptr && why[0] != 0 ? why : "No exposure candidates found.");
+                        ImGui::TextDisabled(I18n::Tr("%s"),
+                                            why != nullptr && why[0] != 0 ? why : I18n::Tr("No exposure candidates found."));
                     }
                     else
                     {
@@ -347,7 +346,7 @@ void RenderInput(Config* config, float menuResScale)
 
                             if (c.reads == 0)
                             {
-                                ImGui::TextDisabled("%zu. %s -- not read yet", i + 1, c.shape.c_str());
+                                ImGui::TextDisabled(I18n::Tr("%zu. %s -- not read yet"), i + 1, c.shape.c_str());
                                 continue;
                             }
                             ImGui::TextColored(
@@ -356,7 +355,7 @@ void RenderInput(Config* config, float menuResScale)
                                 c.highest, c.moves ? "MOVES" : "flat so far");
                         }
 
-                        ImGui::TextDisabled("Unverified exposure candidate.");
+                        ImGui::TextDisabled(I18n::Tr("Unverified exposure candidate."));
                     }
 
                     ImGui::TreePop();

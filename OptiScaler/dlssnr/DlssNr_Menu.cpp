@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "DlssNr.h"
 #include "DlssNr_PipelineUi.h"
@@ -25,22 +25,20 @@ void RenderMenu(Config* config, float menuResScale)
         const float toggleWidth = (ImGui::GetContentRegionAvail().x - toggleGap) * 0.5f;
         const float toggleRight = ImGui::GetCursorPosX() + toggleWidth + toggleGap;
         bool enabled = config->DlssNrEnabled.value_or_default();
-        if (PipelineUi::CheckboxWrapped("Enable Neural Rendering", &enabled, toggleWidth))
+        if (PipelineUi::CheckboxWrapped(I18n::Tr("Enable Neural Rendering"), &enabled, toggleWidth))
         {
             config->DlssNrEnabled = enabled;
             if (enabled && !config->DlssNrRunBeforeSr.has_value())
                 config->DlssNrRunBeforeSr = true;
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "Enable NR processing.");
+            ImGui::SetTooltip(I18n::Tr("Enable NR processing."));
 
         bool applyModel = config->DlssNrApplyModel.value_or_default();
-        if (PipelineUi::CheckboxWrapped("Apply model", &applyModel, toggleWidth))
+        if (PipelineUi::CheckboxWrapped(I18n::Tr("Apply model"), &applyModel, toggleWidth))
             config->DlssNrApplyModel = applyModel;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Show or hide the NR effect. The model still runs when hidden.\nDisable Enable Neural "
-                              "Rendering to stop its GPU cost.");
+            ImGui::SetTooltip(I18n::Tr("Show or hide the NR effect. The model still runs when hidden.\nDisable Enable Neural ""Rendering to stop its GPU cost."));
 
         const auto feature = State::Instance().currentFeature;
         const bool rayReconstruction = feature && feature->GetUpscalerType() == Upscaler::DLSSD;
@@ -51,30 +49,30 @@ void RenderMenu(Config* config, float menuResScale)
         bool generateBefore = placement.beforeUpscale;
         ImGui::SameLine(toggleRight);
         ImGui::BeginDisabled(placement.deferred);
-        if (PipelineUi::CheckboxWrapped("Generate model before upscale", &generateBefore, toggleWidth))
+        if (PipelineUi::CheckboxWrapped(I18n::Tr("Generate model before upscale"), &generateBefore, toggleWidth))
         {
             config->DlssNrRunBeforeSr = generateBefore;
             config->DlssNrResidualAcrossRr = false;
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(placement.deferred ? "The separate-edit path always generates before upscale."
-                                               : "Run NR before the game's upscaler, including RR.");
+            ImGui::SetTooltip(placement.deferred ? I18n::Tr("The separate-edit path always generates before upscale.")
+                                               : I18n::Tr("Run NR before the game's upscaler, including RR."));
 
-        if (PipelineUi::CheckboxWrapped("Apply NR to the finished picture", &finished, toggleWidth))
+        if (PipelineUi::CheckboxWrapped(I18n::Tr("Apply NR to the finished picture"), &finished, toggleWidth))
         {
             config->DlssNrFinishedPicture = finished;
             DlssNr::RetryAfterFailure();
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Apply NR after game effects and HUD. Early generation carries the edit through a separate upscaler.");
+            ImGui::SetTooltip(I18n::Tr("Apply NR after game effects and HUD. Early generation carries the edit through a separate upscaler."));
 
         placement = ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),
                                      config->DlssNrDeferredDlss.value_or_default(),
                                      config->DlssNrResidualAcrossRr.value_or_default(), finished);
         ImGui::SameLine(toggleRight);
         bool deferred = placement.deferred;
-        if (PipelineUi::CheckboxWrapped("Generate before upscale, apply after upscale", &deferred, toggleWidth))
+        if (PipelineUi::CheckboxWrapped(I18n::Tr("Generate before upscale, apply after upscale"), &deferred, toggleWidth))
         {
             config->DlssNrDeferredDlss = deferred;
             config->DlssNrResidualAcrossRr = false; // Clear the legacy alias when the unified option changes.
@@ -82,8 +80,7 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrRunBeforeSr = deferred;
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Keep the game's SR/RR input clean and upscale only the NR edit with a separate non-RR backend."
-                              "\nApply after upscale, or at presentation when finished-picture mode is enabled.");
+            ImGui::SetTooltip(I18n::Tr("Keep the game's SR/RR input clean and upscale only the NR edit with a separate non-RR backend.""\nApply after upscale, or at presentation when finished-picture mode is enabled."));
         ImGui::Spacing();
 
         placement = ResolvePlacement(config->DlssNrRunBeforeSr.value_or_default(),

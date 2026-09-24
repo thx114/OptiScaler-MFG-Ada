@@ -58,7 +58,7 @@ void RenderStatus(Config* config, float menuResScale)
     // moment it describes the frame before last.
     if (!enabled)
     {
-        ImGui::TextDisabled("NR off.");
+        ImGui::TextDisabled(I18n::Tr("NR off."));
     }
     else if (!DlssNr::IsRunning() && !vulkan)
     {
@@ -73,7 +73,7 @@ void RenderStatus(Config* config, float menuResScale)
 
             if (nativeVk)
                 ImGui::TextUnformatted(I18n::Tr("Restart the game to retry native Vulkan NR."));
-            else if (ImGui::SmallButton("Retry"))
+            else if (ImGui::SmallButton(I18n::Tr("Retry")))
                 DlssNr::RetryAfterFailure();
 
             if (!config->DlssNrRunBeforeSr.value_or_default() && strstr(reason, "display resolution") != nullptr)
@@ -126,10 +126,9 @@ void RenderStatus(Config* config, float menuResScale)
         ImGui::PopStyleColor();
 
         ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
+        ImGui::TextDisabled(I18n::Tr("(?)"));
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Time between the start and end of NR on the GPU, including delays while other work "
-                              "runs.\nCompare FPS to check the effect on game performance.");
+            ImGui::SetTooltip(I18n::Tr("Time between the start and end of NR on the GPU, including delays while other work ""runs.\nCompare FPS to check the effect on game performance."));
 
         if (ms.has_value())
         {
