@@ -386,7 +386,7 @@ struct DlssNr_Dx12::State
             uint64_t ready = 0, done = 0, serial = 0;
             bool pending = false, submitted = false, residualOnly = false, sceneLinear = true;
         };
-        std::array<Slot, 6> slots;
+        std::array<Slot, 4> slots;
         // The serial whose NR edit was last composed onto a picture: fg->Present() re-enters the
         // present path for every generated frame, and composing the same slot twice stacks NR on NR.
         long long lastComposedSerial = -1;

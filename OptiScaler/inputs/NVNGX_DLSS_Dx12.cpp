@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "Util.h"
 #include "Config.h"
 
@@ -1225,8 +1225,13 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     }
     if (!tracked.feature && !nrUpscale)
         LOG_DEBUG("DLSS-NR: skipping untracked NGX handle {}; original evaluate is preserved", handleId);
-    LOG_DEBUG("DLSS-NR route: handle {}, NGX feature {}, upscaler {}, RR {}", handleId,
-              tracked.feature ? (int) *tracked.feature : -1, nrUpscale, rayReconstruction);
+    static uint32_t lastRoutedHandle = 0;
+    if (handleId != lastRoutedHandle)
+    {
+        lastRoutedHandle = handleId;
+        LOG_DEBUG("DLSS-NR route: handle {}, NGX feature {}, upscaler {}, RR {}", handleId,
+                  tracked.feature ? (int) *tracked.feature : -1, nrUpscale, rayReconstruction);
+    }
     static size_t evalWithoutFG = 0;
     const bool fgCreated = tracked.frameGenerationCreated;
 
