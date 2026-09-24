@@ -5,6 +5,8 @@
 #include "Streamline_Hooks.h"
 #include "LibraryLoad_Hooks.h"
 
+#include <proxies/NVNGX_Proxy.h>
+
 #include <fsr4/FSR4ModelSelection.h>
 
 #include <Util.h>
@@ -268,6 +270,33 @@ FARPROC WINAPI KernelHooks::hk_KB_GetProcAddress(HMODULE hModule, LPCSTR lpProcN
             LOG_TRACE("Ordinal call: {:X}", (size_t) lpProcName);
 
         return o_KB_GetProcAddress(hModule, lpProcName);
+    }
+
+    // Streamline's plugins bind NGX straight to the signed driver module (sl.dlss loads
+    // _nvngx.dll from the driver store by absolute path), which bypasses the app-dir proxy and
+    // leaves Neural Rendering without a driver: the SR evaluation happens behind our back. When
+    // the proxy is initialised, resolve NGX API entry points from this module instead -- the
+    // exports forward to the very same driver functions, so behaviour is identical, only visible.
+    // Anything the proxy does not export falls back to the real module, so a newer SDK symbol
+    // cannot turn into a null pointer here.
+    if (hModule != nullptr && hModule != dllModule && lpProcName != nullptr &&
+        strncmp(lpProcName, "NVSDK_NGX", 9) == 0 && Config::Instance()->EnableDlssInputs.value_or_default())
+    {
+        static HMODULE realNgxModule = NVNGXProxy::NVNGXModule();
+        if (hModule == realNgxModule)
+        {
+            FARPROC ours = o_KB_GetProcAddress(dllModule, lpProcName);
+            if (ours != nullptr)
+            {
+                static bool logged = false;
+                if (!logged)
+                {
+                    logged = true;
+                    LOG_INFO("NGX API resolved from the driver module is served by the OptiScaler proxy: {}", lpProcName);
+                }
+                return ours;
+            }
+        }
     }
 
     // if (hModule == dllModule && lpProcName != nullptr)
