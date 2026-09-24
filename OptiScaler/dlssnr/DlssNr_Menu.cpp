@@ -9,6 +9,7 @@
 #include <menu/menu_common.h>
 #include <algorithm>
 #include <cmath>
+#include <Localization.h>
 
 namespace DlssNr
 {
@@ -17,7 +18,7 @@ void RenderMenu(Config* config, float menuResScale)
 {
     using namespace MenuSections;
     ImGui::Spacing();
-    if (auto header = ScopedCollapsingHeader("DLSS Neural Rendering"); header.IsHeaderOpen())
+    if (auto header = ScopedCollapsingHeader(I18n::Tr("DLSS Neural Rendering")); header.IsHeaderOpen())
     {
         ScopedIndent indent {};
         const float toggleGap = ImGui::GetStyle().ItemSpacing.x;
@@ -92,7 +93,7 @@ void RenderMenu(Config* config, float menuResScale)
         if (placement.deferred && !nativePrivateVk)
         {
             int backend = (int) GetPrivateUpscaler(config->DlssNrPrivateUpscaler.value_or_default());
-            if (ImGui::Combo("Private NR upscaler", &backend, "DLSS\0FSR 2.2\0FSR (FidelityFX)\0XeSS\0"))
+            if (ImGui::Combo(I18n::Tr("Private NR upscaler"), &backend, "DLSS\0FSR 2.2\0FSR (FidelityFX)\0XeSS\0"))
                 config->DlssNrPrivateUpscaler = backend;
             HelpMarker("Upscales only the NR edit, with or without game RR. FSR (FidelityFX) and XeSS need their runtimes.");
         }
@@ -135,7 +136,7 @@ void RenderMenu(Config* config, float menuResScale)
             break;
         }
         ImGui::PopItemWidth();
-        if (ImGui::CollapsingHeader("Inspect NR"))
+        if (ImGui::CollapsingHeader(I18n::Tr("Inspect NR")))
         {
             ImGui::PushItemWidth(std::min(220.0f * menuResScale, ImGui::GetContentRegionAvail().x * 0.42f));
             RenderInspect(config, menuResScale);

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <Localization.h>
 
 namespace DlssNr::MenuSections
 {
@@ -39,7 +40,7 @@ void RenderInput(Config* config, float menuResScale)
         if (ds < 0 || ds >= IM_ARRAYSIZE(dsNames))
             ds = (int) Scaler::Lanczos3;
 
-        if (ImGui::Combo("Downscaler (NR)", &ds, dsNames, IM_ARRAYSIZE(dsNames)))
+        if (ImGui::Combo(I18n::Tr("Downscaler (NR)"), &ds, dsNames, IM_ARRAYSIZE(dsNames)))
             config->DlssNrScalingDownscaler = (Scaler) ds;
 
         HelpMarker("Downsampling filter for resolutions above 100%.");
@@ -53,7 +54,7 @@ void RenderInput(Config* config, float menuResScale)
         static const char* enlargeNames[] = { "Classic", "Matched residual", "Matched residual + DLSS" };
         int enlarge = (int) std::min(config->DlssNrTransfer.value_or_default(), 2u);
 
-        if (ImGui::Combo("Enlargement", &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames)))
+        if (ImGui::Combo(I18n::Tr("Enlargement"), &enlarge, enlargeNames, IM_ARRAYSIZE(enlargeNames)))
             config->DlssNrTransfer = (uint32_t) enlarge;
 
         if (!reduced)
@@ -66,7 +67,7 @@ void RenderInput(Config* config, float menuResScale)
     int reversible = (int) config->DlssNrReversibleMode.value_or_default();
     if (reversible < 0 || reversible > 4)
         reversible = 0;
-    if (ImGui::Combo("HDR mapping (experimental)", &reversible, reversibleNames, IM_ARRAYSIZE(reversibleNames)))
+    if (ImGui::Combo(I18n::Tr("HDR mapping (experimental)"), &reversible, reversibleNames, IM_ARRAYSIZE(reversibleNames)))
         config->DlssNrReversibleMode = (uint32_t) reversible;
 
     HelpMarker("HDR mapping curve. Replace bypasses strength and highlight controls.");
@@ -88,7 +89,7 @@ void RenderInput(Config* config, float menuResScale)
             if (source < 0 || source > 2)
                 source = 0;
 
-            if (ImGui::Combo("White point source", &source, sourceNames, IM_ARRAYSIZE(sourceNames)))
+            if (ImGui::Combo(I18n::Tr("White point source"), &source, sourceNames, IM_ARRAYSIZE(sourceNames)))
             {
                 config->DlssNrWhitePointSource = (uint32_t) source;
             }
@@ -236,7 +237,7 @@ void RenderInput(Config* config, float menuResScale)
             bool meter = config->DlssNrScanMeter.value_or_default();
 
             if (config->DlssNrWhitePointSource.value_or_default() == 2 &&
-                ImGui::Checkbox("Show exposure meter", &meter))
+                ImGui::Checkbox(I18n::Tr("Show exposure meter"), &meter))
                 config->DlssNrScanMeter = meter;
 
             HelpMarker("Display the scanned value. Does not change the image.");
@@ -249,7 +250,7 @@ void RenderInput(Config* config, float menuResScale)
                 const bool isSource = config->DlssNrWhitePointSource.value_or_default() == 2;
                 ImGui::BeginDisabled(live <= 0.0f || !isSource);
 
-                if (ImGui::Button("Anchor here"))
+                if (ImGui::Button(I18n::Tr("Anchor here")))
                 {
                     const float captureWhite =
                         anchors.empty() ? std::max(0.01f, config->DlssNrWhitePointScale.value_or_default())
@@ -322,12 +323,12 @@ void RenderInput(Config* config, float menuResScale)
                 if (anchors.size() == 1)
                 {
                     bool inverted = config->DlssNrScanInverted.value_or_default();
-                    if (ImGui::Checkbox("Invert exposure tracking", &inverted))
+                    if (ImGui::Checkbox(I18n::Tr("Invert exposure tracking"), &inverted))
                         config->DlssNrScanInverted = inverted;
 
                     HelpMarker("Reverse exposure response for single-point calibration.");
                 }
-                if (ImGui::TreeNode("Advanced"))
+                if (ImGui::TreeNode(I18n::Tr("Advanced")))
                 {
 
                     const auto found = DlssNr::ExposureScan::Report();

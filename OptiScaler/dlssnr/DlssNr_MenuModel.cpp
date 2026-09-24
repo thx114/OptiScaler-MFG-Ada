@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <Localization.h>
 
 namespace DlssNr::MenuSections
 {
@@ -110,7 +111,7 @@ void RenderModel(Config* config, float menuResScale)
             ImGui::EndCombo();
         }
         ImGui::SameLine();
-        ImGui::TextUnformatted("Model passes");
+        ImGui::TextUnformatted(I18n::Tr("Model passes"));
     }
 
     static const char* styles[] = { "Standard", "Natural", "Cinematic" };
@@ -119,7 +120,7 @@ void RenderModel(Config* config, float menuResScale)
     if (ImGui::TreeNodeEx("Pass 1", ImGuiTreeNodeFlags_DefaultOpen))
     {
         int style = (int) std::min(config->DlssNrStyle.value_or_default(), 2u);
-        if (ImGui::Combo("Style", &style, styles, IM_ARRAYSIZE(styles)))
+        if (ImGui::Combo(I18n::Tr("Style"), &style, styles, IM_ARRAYSIZE(styles)))
             config->DlssNrStyle = (uint32_t) style;
 
         DeferredSlider("Intensity", &config->DlssNrIntensity, 0.0f, 2.0f, 1.0f);
@@ -127,7 +128,7 @@ void RenderModel(Config* config, float menuResScale)
         DeferredSlider("Local tone", &config->DlssNrLocalTone, 0.0f, 2.0f, 1.0f);
         DeferredSlider("Skin structure", &config->DlssNrSkinStructure, -1.0f, 2.0f, -1.0f);
         bool mask = config->DlssNrAutoMask.value_or_default();
-        if (ImGui::Checkbox("Auto skin mask", &mask))
+        if (ImGui::Checkbox(I18n::Tr("Auto skin mask"), &mask))
             config->DlssNrAutoMask = mask;
         HelpMarker("Model-based skin selection.");
         ImGui::TreePop();
@@ -145,7 +146,7 @@ void RenderModel(Config* config, float menuResScale)
                        config->DlssNrSkinStructure.value_or_default(), "%.2f", true);
         bool mask = config->DlssNrPass2AutoMask.has_value() ? config->DlssNrPass2AutoMask.value()
                                                             : config->DlssNrAutoMask.value_or_default();
-        if (ImGui::Checkbox("Auto skin mask", &mask))
+        if (ImGui::Checkbox(I18n::Tr("Auto skin mask"), &mask))
             config->DlssNrPass2AutoMask = mask;
         ImGui::SameLine();
         if (ImGui::SmallButton("Reset##mask"))
