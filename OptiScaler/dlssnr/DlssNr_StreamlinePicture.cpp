@@ -43,12 +43,59 @@ template <bool Local> struct Hooks
     static void Apply(IDXGISwapChain* swapchain, UINT flags, bool skip)
     {
         const auto& cfg = *Config::Instance();
+        // One-shot diagnostics: the first present to reach each branch says so, once.
         if (skip || (flags & DXGI_PRESENT_TEST) || !cfg.DlssNrEnabled.value_or_default() ||
-            !cfg.DlssNrFinishedPicture.value_or_default()) return;
+            !cfg.DlssNrFinishedPicture.value_or_default())
+        {
+            static bool saidConfig = false;
+            if (!saidConfig && !skip && !(flags & DXGI_PRESENT_TEST))
+            {
+                saidConfig = true;
+                LOG_INFO("DLSS-NR finished picture: present reached the hook with NR config off (enabled={}, finished={})",
+                         cfg.DlssNrEnabled.value_or_default(), cfg.DlssNrFinishedPicture.value_or_default());
+            }
+            return;
+        }
+        // With the DLSSG output the FG pre-present hook composes on the real frame; a compose
+        // here would run on interpolated frames and cancel the FG hook's pending work.
+        if (State::Instance().activeFgOutput == FGOutput::DLSSG)
+        {
+            static bool saidFg = false;
+            if (!saidFg)
+            {
+                saidFg = true;
+                LOG_INFO("DLSS-NR finished picture: DLSSG output active, the FG pre-present hook composes instead");
+            }
+            return;
+        }
         auto queue = RenderQueue(swapchain);
-        if (!queue) return;
+        if (!queue)
+        {
+            static bool saidQueue = false;
+            if (!saidQueue)
+            {
+                saidQueue = true;
+                LOG_INFO("DLSS-NR finished picture: present reached the hook, no render queue registered for this swapchain");
+            }
+            return;
+        }
         auto picture = Read(swapchain, getIndex, getBuffer);
-        if (!picture) return;
+        if (!picture)
+        {
+            static bool saidPicture = false;
+            if (!saidPicture)
+            {
+                saidPicture = true;
+                LOG_INFO("DLSS-NR finished picture: present reached the hook, backbuffer read failed");
+            }
+            return;
+        }
+        static bool saidCompose = false;
+        if (!saidCompose)
+        {
+            saidCompose = true;
+            LOG_INFO("DLSS-NR finished picture: composing on the presented picture");
+        }
         ApplyToStreamlinePicture(swapchain, picture.Get(), queue.Get());
     }
 

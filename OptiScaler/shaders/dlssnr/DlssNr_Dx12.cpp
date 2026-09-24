@@ -818,6 +818,47 @@ void ApplyToFinishedPictureBridge(IDXGISwapChain* swapchain, ID3D12CommandQueue*
         LOG_INFO("NR bridge: applied picture (epoch {})", (unsigned long long) ::State::Instance().frameCount);
     }
 }
+// The FG pre-present twin of ApplyToFinishedPictureBridge: same real-frame semantics, but without
+// the bridge epoch -- the FG hook calls this every real frame and must not skip itself.
+void ApplyToFinishedPictureFg(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue)
+{
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> chain;
+    Microsoft::WRL::ComPtr<ID3D12Resource> picture;
+    if (!swapchain || !queue ||
+        FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&chain))) ||
+        FAILED(chain->GetBuffer(chain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&picture))))
+    {
+        static bool reportedFgFailure = false;
+        if (!reportedFgFailure)
+        {
+            reportedFgFailure = true;
+            LOG_INFO("NR FG pre-present: swapchain QI/GetBuffer failed (swapchain {}, queue {})",
+                     (void*) swapchain, (void*) queue);
+        }
+        return;
+    }
+    auto space = ReadFinishedSpace(swapchain, picture.Get());
+    {
+        std::lock_guard lock(nrOwnersMutex);
+        if (activeNrOwner)
+            activeNrOwner->ApplyFinishedBridge(picture.Get(), queue, space);
+        else
+        {
+            static bool reportedFgNoOwner = false;
+            if (!reportedFgNoOwner)
+            {
+                reportedFgNoOwner = true;
+                LOG_INFO("NR FG pre-present: no active NR owner");
+            }
+        }
+    }
+    static bool reportedFgApplied = false;
+    if (!reportedFgApplied)
+    {
+        reportedFgApplied = true;
+        LOG_INFO("NR FG pre-present: composed NR on the real frame ahead of DLSSG");
+    }
+}
 bool ConsumeBridgeAppliedEpoch()
 {
     UINT64 epoch = bridgeAppliedEpoch.load();

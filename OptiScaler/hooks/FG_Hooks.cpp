@@ -1223,7 +1223,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         // The DX11-on-12 bridge already applied NR to this frame's real picture;
         // skip here to avoid processing it twice (once per real frame, ignoring interpolated frames).
         if (!DlssNr::ConsumeBridgeAppliedEpoch())
-            DlssNr::ApplyToFinishedPicture(This, state.currentCommandQueue);
+            DlssNr::ApplyToFinishedPictureFg(This, state.currentCommandQueue);
         fg->Present();
     }
     else if (willPresent && fg != nullptr)
