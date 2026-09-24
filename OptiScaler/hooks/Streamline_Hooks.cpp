@@ -1,6 +1,7 @@
 #include <pch.h>
 
 #include "Streamline_Hooks.h"
+#include "LibraryLoad_Hooks.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include <framegen/dlssg/MfgUnlock.h>
 #endif
@@ -16,12 +17,69 @@
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <framegen/dlssg/MfgUnlock.h>
 #include <proxies/KernelBase_Proxy.h>
+#include <proxies/Streamline_Proxy.h>
 #include <imgui/ImGuiNotify.hpp>
 
 #include <json.hpp>
 #include <sl1_reflex.h>
 #include <magic_enum.hpp>
 #include "detours/detours.h"
+
+namespace
+{
+thread_local const sl::Preferences* gamePluginPreferences = nullptr;
+struct GamePluginLoadScope
+{
+    const sl::Preferences* previous;
+    explicit GamePluginLoadScope(const sl::Preferences& preferences)
+        : previous(std::exchange(gamePluginPreferences, &preferences))
+    {
+    }
+    ~GamePluginLoadScope() { gamePluginPreferences = previous; }
+};
+} // namespace
+
+HMODULE StreamlineHooks::LoadIsolatedGamePlugin(LPCWSTR requestedPath)
+{
+    if (!gamePluginPreferences)
+        return nullptr;
+    const auto& state = State::Instance();
+    if (state.activeFgOutput != FGOutput::DLSSG || !StreamlineProxy::IsD3D12Inited())
+        return nullptr;
+
+    const auto shared = GetModuleHandleW(requestedPath);
+    if (!shared)
+        return nullptr;
+    const wchar_t* name = shared == state.optiSlCommon   ? L"sl.common.dll"
+                          : shared == state.optiSlReflex ? L"sl.reflex.dll"
+                          : shared == state.optiSlPCL    ? L"sl.pcl.dll"
+                                                         : nullptr;
+    // sl.common has no public feature function from which to resolve its active OTA module.
+    auto path = std::filesystem::path(requestedPath).lexically_normal().wstring();
+    to_lower_in_place(path);
+    if (!name && path.find(L"\\sl_common_") != std::wstring::npos && path.find(L"\\versions\\") != std::wstring::npos)
+        name = L"sl.common.dll";
+    if (!name)
+        return nullptr;
+
+    // Two interposers cannot own the same plugin's globals. Prefer the game's own copy when
+    // NVIDIA's override selection points it at an already active OptiScaler plugin.
+    for (uint32_t i = 0; i < gamePluginPreferences->numPathsToPlugins; ++i)
+    {
+        const auto directory = gamePluginPreferences->pathsToPlugins[i];
+        if (!directory)
+            continue;
+        const auto candidate = std::filesystem::path(directory) / name;
+        const auto privateDirectory = std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"streamline";
+        if (Util::IsSubpath(candidate, privateDirectory) || GetModuleHandleW(candidate.c_str()) == shared ||
+            !std::filesystem::exists(candidate))
+            continue;
+        LOG_INFO("Keeping game Streamline plugin separate from DLSSG output: {}",
+                 wstring_to_string(candidate.wstring()));
+        return LibraryLoadHooks::LoadLibraryCheckW(candidate.wstring(), candidate.c_str());
+    }
+    return nullptr;
+}
 
 static bool IsSL1AndDLSSGActive()
 {
@@ -112,6 +170,7 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     LOG_FUNC();
 
     sl::Preferences localPref = pref;
+    GamePluginLoadScope pluginScope(localPref);
 
     if (localPref.logMessageCallback != &streamlineLogCallback)
         o_logCallback = localPref.logMessageCallback;

@@ -150,6 +150,7 @@ class StreamlineHooks
     static void applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive);
 
     static void unhookInterposer();
+    static HMODULE LoadIsolatedGamePlugin(LPCWSTR requestedPath);
     static void hookInterposer(HMODULE slInterposer);
 
     static void unhookDlss();

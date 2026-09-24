@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "Util.h"
 #include "Config.h"
@@ -487,6 +487,17 @@ bool Util::GetFileVersion(std::wstring dllPath, version_t* fileVersionOut, versi
 bool Util::IsSubpath(const std::filesystem::path& path, const std::filesystem::path& base)
 {
     auto rel = std::filesystem::relative(path, base);
+
+    // relative() returns an empty path when the two inputs share no common root -- different drive
+    // letters being the ordinary case, not an edge case, on a multi-drive install. Every caller
+    // until this one happened to compare paths already known to share a root (the exe's own tree),
+    // so an empty result was never actually reached; a caller comparing an externally-supplied path
+    // against it (a plugin directory list, say) can reach it easily. begin() on an empty path is
+    // end(), and dereferencing that is undefined behaviour. No shared root means `path` is
+    // definitionally not under `base`.
+    if (rel.empty())
+        return false;
+
     auto first = *rel.begin();
     return first != "." && first != "..";
 }

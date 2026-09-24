@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "LibraryLoad_Hooks.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include <framegen/dlssg/MfgUnlock.h>
@@ -47,6 +47,9 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckA(std::string libName, LPCSTR lpLibFul
 
 HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibFullPath)
 {
+    if (auto isolated = StreamlineHooks::LoadIsolatedGamePlugin(lpLibFullPath))
+        return isolated;
+
     auto libNameA = wstring_to_string(libName);
 
 #ifdef LOG_LIB_OPERATIONS
