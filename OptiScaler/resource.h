@@ -26,9 +26,11 @@
 #define STRINGIZE_(s) #s
 #define STRINGIZE(s) STRINGIZE_(s)
 
+// The MFG-Ada fork tracks its own release line (mfg-ada-0.1.x): the update check compares
+// against this fork's GitHub tags, so these numbers must match the latest published tag.
 #define VER_MAJOR_VERSION 0
-#define VER_MINOR_VERSION 9
-#define VER_HOTFIX_VERSION 10
+#define VER_MINOR_VERSION 1
+#define VER_HOTFIX_VERSION 3
 #define VER_BUILD_NUMBER 0
 
 // #define VER_DEV_RELEASE

@@ -73,7 +73,7 @@ std::optional<LatestReleaseInfo> FetchLatestRelease()
         return std::nullopt;
     }
 
-    constexpr LPCWSTR latestReleasePath = L"/repos/ShyVortex/OptiScaler-DLSSNR-PreSR-Multipass/releases/latest";
+    constexpr LPCWSTR latestReleasePath = L"/repos/thx114/OptiScaler-MFG-Ada/releases/latest";
     request = WinHttpOpenRequest(connection, L"GET", latestReleasePath, nullptr, WINHTTP_NO_REFERER,
                                  WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
     if (request == nullptr)
