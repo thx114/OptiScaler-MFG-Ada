@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "Util.h"
 #include "Config.h"
@@ -580,7 +580,57 @@ std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::p
         cnt++;
     }
 
-    // Not found anywhere
+    // 4) NVIDIA NGX OTA model cache: driver-provisioned runtimes live under
+    //    %ProgramData%\NVIDIA\NGX\models\<model>\versions\<ver>\. Streamline keeps
+    //    its OTA modules there even when the game ships no runtime of its own, so
+    //    try the highest version first before giving up.
+    const std::wstring baseName = fileName.wstring();
+    const wchar_t* ngxModel = nullptr;
+    if (baseName == L"nvngx_dlss.dll")
+        ngxModel = L"dlss";
+    else if (baseName == L"nvngx_dlssd.dll")
+        ngxModel = L"dlssd";
+    else if (baseName == L"nvngx_dlssg.dll")
+        ngxModel = L"dlssg";
+
+    if (ngxModel != nullptr)
+    {
+        const char* programData = std::getenv("ProgramData");
+        if (programData != nullptr)
+        {
+            std::filesystem::path ngxVersions =
+                std::filesystem::path(programData) / L"NVIDIA" / L"NGX" / L"models" / ngxModel / L"versions";
+
+            std::vector<std::filesystem::path> versions;
+            std::error_code ec;
+            for (const auto& entry : std::filesystem::directory_iterator(
+                     ngxVersions, std::filesystem::directory_options::skip_permission_denied, ec))
+            {
+                if (entry.is_directory())
+                    versions.push_back(entry.path());
+            }
+
+            // Highest version string last, then walk newest-first
+            std::sort(versions.begin(), versions.end(),
+                      [](const auto& a, const auto& b) { return a.wstring() < b.wstring(); });
+
+            for (auto it = versions.rbegin(); it != versions.rend(); ++it)
+            {
+                if (auto foundPath = SearchDirectoryBFS(*it))
+                {
+                    LOG_INFO(L"{} found at {} (NVIDIA NGX model cache)", fileName.wstring(),
+                             foundPath.value().wstring());
+                    return foundPath;
+                }
+            }
+
+            LOG_INFO(L"{} not in NVIDIA NGX model cache ({} version dirs under {})", fileName.wstring(),
+                     versions.size(), ngxVersions.wstring());
+        }
+    }
+
+    // Not found anywhere - name what was searched so the log shows the gap
+    LOG_WARN(L"{} NOT found. Searched: {} and its subfolders", fileName.wstring(), startDir.wstring());
     return std::nullopt;
 }
 
