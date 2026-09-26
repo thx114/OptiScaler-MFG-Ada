@@ -357,6 +357,12 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGDLSSGFramerateTargetDMFG.set_from_config(readFloat("DLSSG", "FramerateTargetDMFG"));
             FGDLSSGOverrideForceDMFG.set_from_config(readBool("DLSSG", "OverrideForceDMFG"));
             FGDLSSGForceDMFG.set_from_config(readBool("DLSSG", "ForceDMFG"));
+
+            FGDLSSGPausePresentGap.set_from_config(readInt("DLSSG", "PausePresentGap"));
+            if (FGDLSSGPausePresentGap.has_value() && FGDLSSGPausePresentGap.value() < 3)
+                FGDLSSGPausePresentGap.reset();
+
+            FGDLSSGSoftPause.set_from_config(readBool("DLSSG", "SoftPause"));
         }
 
         // FSR FG Inputs
@@ -1247,6 +1253,10 @@ bool Config::SaveIni()
         ini.SetValue("DLSSG", "OverrideForceDMFG",
                      GetBoolValue(Instance()->FGDLSSGOverrideForceDMFG.value_for_config()).c_str());
         ini.SetValue("DLSSG", "ForceDMFG", GetBoolValue(Instance()->FGDLSSGForceDMFG.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "PausePresentGap",
+                     GetIntValue(Instance()->FGDLSSGPausePresentGap.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "SoftPause",
+                     GetBoolValue(Instance()->FGDLSSGSoftPause.value_for_config()).c_str());
     }
 
     // OptiFG

@@ -511,6 +511,81 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_GetScratchBufferSize(NVSDK_NGX_Fe
 
 #pragma region NVSDK_NGX_D3D11 Feature
 
+// Dormant-reuse: Star Rail calls NVSDK_NGX_D3D11_ReleaseFeature every time a UI screen opens
+// and NVSDK_NGX_D3D11_CreateFeature with identical parameters ~2 s later when it closes.
+// Destroying and rebuilding the feature each cycle costs ~100 ms of NGX teardown+creation on
+// the frame thread -- the "opening the menu freezes" stutter. Instead, ReleaseFeature marks a
+// fully-initialized feature dormant (keeps it alive in Dx11Contexts); this helper finds a
+// dormant feature whose type and render/target size match the incoming CreateFeature call and
+// wakes it, so the release+recreate cycle becomes a no-op. Returns a pointer into Dx11Contexts
+// (still owned there) or nullptr. Stale dormant entries (game never came back, e.g. a real
+// resolution change) are expired and destroyed here so we don't leak GPU resources.
+static ContextData<IFeature_Dx11>* TryReuseDormantDx11Feature(NVSDK_NGX_Feature InFeatureID,
+                                                               NVSDK_NGX_Parameter* InParameters)
+{
+    if (shutdown)
+        return nullptr;
+
+    const auto now = std::chrono::steady_clock::now();
+    constexpr auto kDormantMaxAge = std::chrono::seconds(15);
+
+    unsigned int reqRW = 0, reqRH = 0, reqTW = 0, reqTH = 0;
+    InParameters->Get(NVSDK_NGX_Parameter_Width, &reqRW);
+    InParameters->Get(NVSDK_NGX_Parameter_Height, &reqRH);
+    InParameters->Get(NVSDK_NGX_Parameter_OutWidth, &reqTW);
+    InParameters->Get(NVSDK_NGX_Parameter_OutHeight, &reqTH);
+
+    ContextData<IFeature_Dx11>* woke = nullptr;
+
+    for (auto it = Dx11Contexts.begin(); it != Dx11Contexts.end(); ++it)
+    {
+        auto& ctx = it->second;
+        if (!ctx.dormant)
+            continue;
+
+        if (now - ctx.dormantSince > kDormantMaxAge)
+        {
+            LOG_INFO("dormant feature {0} expired (age>{1}s), destroying", it->first,
+                     (int) std::chrono::duration_cast<std::chrono::seconds>(kDormantMaxAge).count());
+            if (ctx.feature && ctx.feature.get() == State::Instance().currentFeature)
+                State::Instance().currentFeature = nullptr;
+            ctx.feature.reset();
+            ctx.dormant = false;
+            continue;
+        }
+
+        if (!ctx.feature || !ctx.feature->IsInited())
+            continue;
+
+        // DLSSD is the only RayReconstruction backend; everything else is a SuperSampling
+        // substitute, so this distinguishes the two feature categories reliably.
+        const bool isRR = (ctx.feature->GetUpscalerType() == Upscaler::DLSSD);
+        const bool typeMatch = (InFeatureID == NVSDK_NGX_Feature_RayReconstruction) ? isRR : !isRR;
+        if (!typeMatch)
+            continue;
+
+        // Match render size when the game provided one; otherwise fall back to the first
+        // dormant feature of the right type (HSR always populates Width/Height).
+        if (reqRW || reqRH)
+        {
+            if (ctx.feature->RenderWidth() != reqRW || ctx.feature->RenderHeight() != reqRH)
+                continue;
+        }
+        if ((reqTW || reqTH) &&
+            (ctx.feature->TargetWidth() != reqTW || ctx.feature->TargetHeight() != reqTH))
+            continue;
+
+        ctx.dormant = false;
+        woke = &ctx;
+        LOG_INFO("waking dormant feature {0} for reuse (render {1}x{2}, target {3}x{4})",
+                 it->first, ctx.feature->RenderWidth(), ctx.feature->RenderHeight(),
+                 ctx.feature->TargetWidth(), ctx.feature->TargetHeight());
+        break;
+    }
+
+    return woke;
+}
+
 NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext* InDevCtx,
                                                              NVSDK_NGX_Feature InFeatureID,
                                                              NVSDK_NGX_Parameter* InParameters,
@@ -530,6 +605,27 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
         {
             LOG_ERROR("Can't create this feature ({0})!", (int) InFeatureID);
             return NVSDK_NGX_Result_Fail;
+        }
+    }
+
+    // Dormant reuse: if the game just released a feature with identical parameters (HSR UI
+    // toggle), wake it instead of rebuilding -- this is what neutralizes the menu stutter.
+    if (!shutdown)
+    {
+        if (auto* woke = TryReuseDormantDx11Feature(InFeatureID, InParameters); woke != nullptr)
+        {
+            auto* feat = woke->feature.get();
+            *OutHandle = feat->Handle();
+            State::Instance().api = DX11;
+            State::Instance().currentFeature = feat;
+            evalCounter = 0;
+            // Refresh the cached device pointer. HSR reuses the same D3D11 device/context,
+            // but this is cheap insurance and matches what a fresh create does below.
+            InDevCtx->GetDevice(&D3D11Device);
+            if (D3D11Device)
+                D3D11Device->Release();
+            LOG_INFO("reused dormant feature (handle {0}), skipping Init", feat->Handle()->Id);
+            return NVSDK_NGX_Result_Success;
         }
     }
 
@@ -632,10 +728,29 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_ReleaseFeature(NVSDK_NGX_Handle* 
 
     if (auto deviceContext = Dx11Contexts[handleId].feature.get(); deviceContext != nullptr)
     {
-        if (!shutdown)
+        // Dormant retention: HSR releases DLSS on every UI open and recreates it ~2 s later
+        // with identical parameters. Keep a fully-initialized feature alive in Dx11Contexts
+        // so the matching CreateFeature (see TryReuseDormantDx11Feature) can wake it instead
+        // of paying ~100 ms of NGX teardown+rebuild each cycle -- the menu stutter. Only
+        // retain inited features; a half-init one (Init failed, pending backend change) has
+        // nothing worth reusing. The 500 ms sleep that used to guard reset() is gone too:
+        // it was unconditional on every game-driven release and the driver teardown it
+        // preceded is synchronous and needs no lead time.
+        if (!shutdown && deviceContext->IsInited())
         {
-            LOG_TRACE("sleeping for 500ms before reset()!");
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            auto& ctx = Dx11Contexts[handleId];
+            ctx.dormant = true;
+            ctx.dormantSince = std::chrono::steady_clock::now();
+            // Keep State::currentFeature pointing at the (still-alive, still-Inited) feature.
+            // The game does not call EvaluateFeature while a feature is dormant, so nothing
+            // dereferences it during the gap; but the on-screen overlay and the FG present
+            // path (FG_Hooks.cpp) read currentFeature between EvaluateFeature calls, and a
+            // null here makes the overlay print "nvngx.dll / libxess.dll not found, upscaling
+            // will NOT work" -- a false alarm that tracked every release and looked like a
+            // crash. Leaving it set costs nothing: the feature object is alive, IsInited()
+            // stays true, and the next real EvaluateFeature refreshes the pointer anyway.
+            LOG_INFO("feature {0} moved to dormant pool (retained, not destroyed)", handleId);
+            return NVSDK_NGX_Result_Success;
         }
 
         if (deviceContext == State::Instance().currentFeature)

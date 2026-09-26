@@ -712,6 +712,20 @@ bool Dx11wDx12SC::_InitInteropObjects()
 
     const UINT copyAllocatorCount = std::max<UINT>(_bufferCount != 0 ? _bufferCount : 3, 3);
 
+    // Dedicated COMPUTE queue for interop copies (see _copyQueue doc in the header).
+    if (_copyQueue == nullptr)
+    {
+        D3D12_COMMAND_QUEUE_DESC copyQueueDesc = {};
+        copyQueueDesc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        copyQueueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+        result = _dx12Device->CreateCommandQueue(&copyQueueDesc, IID_PPV_ARGS(&_copyQueue));
+        if (FAILED(result) || _copyQueue == nullptr)
+        {
+            LOG_ERROR("Create interop copy (COMPUTE) queue failed: {:X}", (UINT) result);
+            return false;
+        }
+    }
+
     if (_copyAllocators.size() != copyAllocatorCount)
     {
         for (auto& allocator : _copyAllocators)
@@ -736,7 +750,7 @@ bool Dx11wDx12SC::_InitInteropObjects()
         if (_copyAllocators[i] != nullptr)
             continue;
 
-        result = _dx12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_copyAllocators[i]));
+        result = _dx12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&_copyAllocators[i]));
         if (FAILED(result))
         {
             LOG_ERROR("CreateCommandAllocator[{}] failed: {:X}", i, (UINT) result);
@@ -749,7 +763,7 @@ bool Dx11wDx12SC::_InitInteropObjects()
         if (_copyCommandLists[i] != nullptr)
             continue;
 
-        result = _dx12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _copyAllocators[i], nullptr,
+        result = _dx12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, _copyAllocators[i], nullptr,
                                                 IID_PPV_ARGS(&_copyCommandLists[i]));
         if (FAILED(result))
         {
@@ -947,7 +961,7 @@ bool Dx11wDx12SC::_CopyDx11BackBufferToShared(UINT index)
 
 bool Dx11wDx12SC::_WaitDx11ThenDx12()
 {
-    if (_dx11Context4 == nullptr || _dx11Fence == nullptr || _dx12CommandQueue == nullptr ||
+    if (_dx11Context4 == nullptr || _dx11Fence == nullptr || _copyQueue == nullptr ||
         _dx12SharedFence == nullptr)
         return false;
 
@@ -964,8 +978,9 @@ bool Dx11wDx12SC::_WaitDx11ThenDx12()
 
     // Important:
     // Do not block the FG/present queue on the D3D11 shared fence.
-    // Isolate the cross-API wait on the interop copy queue.
-    result = _dx12CommandQueue->Wait(_dx12SharedFence, waitValue);
+    // Isolate the cross-API wait on the interop copy queue (COMPUTE), so the copy workload
+    // that follows does not serialize against the DIRECT render/FG queue.
+    result = _copyQueue->Wait(_dx12SharedFence, waitValue);
     if (FAILED(result))
     {
         LOG_ERROR("interop copy queue Wait on D3D11 fence failed: {:X}", (UINT) result);
@@ -1016,7 +1031,7 @@ bool Dx11wDx12SC::_WaitForCopyAllocator(UINT slot)
 
 bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
 {
-    if (_copyAllocators.empty() || _copyCommandLists.empty() || _dx12CommandQueue == nullptr || _copyFence == nullptr ||
+    if (_copyAllocators.empty() || _copyCommandLists.empty() || _copyQueue == nullptr || _copyFence == nullptr ||
         _fgSwapChain == nullptr || _currentFakeIndex >= _openedDx11BackBuffers.size() ||
         _openedDx11BackBuffers[_currentFakeIndex] == nullptr)
     {
@@ -1084,11 +1099,11 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
     }
 
     ID3D12CommandList* lists[] = { _copyCommandLists[copySlot] };
-    _dx12CommandQueue->ExecuteCommandLists(1, lists);
+    _copyQueue->ExecuteCommandLists(1, lists);
 
     const auto signalValue = ++_copyFenceValue;
 
-    result = _dx12CommandQueue->Signal(_copyFence, signalValue);
+    result = _copyQueue->Signal(_copyFence, signalValue);
     if (FAILED(result))
     {
         LOG_ERROR("interop copy fence signal failed: {:X}", (UINT) result);
@@ -1205,6 +1220,8 @@ void Dx11wDx12SC::_ReleaseInteropObjects()
     SafeRelease(_copyFence);
     SafeCloseHandle(_copyFenceEvent);
     _copyFenceValue = 1;
+
+    SafeRelease(_copyQueue);
 
     _interopInitialized = false;
 }

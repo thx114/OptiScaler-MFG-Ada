@@ -12,6 +12,10 @@
 #include <misc/IdentifyGpu.h>
 #include <scanner/scanner.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cwctype>
+#include <filesystem>
 #include <mutex>
 #include <vector>
 
@@ -72,14 +76,54 @@ std::recursive_mutex g_mutex;
 AttemptOutcome g_attemptOutcome = AttemptOutcome::WaitingForModule;
 HMODULE g_attemptedModule = nullptr;
 HMODULE g_retainedModule = nullptr;
-// Modules already patched this session. NGX loads several snippets (OptiDllPath, streamline, OTA
-// bins) and the patch target can switch back to an earlier one; its original signatures are gone
-// after patching, so a rescan must restore the remembered success instead of calling it unsupported.
-std::vector<HMODULE> g_patchedModules;
 
-// Temporal (midpoint) correction state for the retained module. Slot redirection is applied after
-// the gate transaction; the VirtualAlloc replacement lives for the process because descriptors may
-// reference it at any time.
+// Every module patched this session, retained so its patched bytes stay mapped. NGX/Streamline
+// remap the DLSSG snippet during startup (observed: the detection flipping between the static
+// nvngx_dlssg.dll and the OTA .bin four times in six seconds in HSR), so a module that was
+// patched once is expected to become the target again.
+struct ModuleRecord
+{
+    HMODULE module = nullptr; // retained handle, keeps the mapping alive
+    std::wstring path;        // normalized lowercase file path
+};
+std::vector<ModuleRecord> g_patchedModules;
+
+struct RvaPatch
+{
+    uint32_t rva = 0;
+    std::vector<uint8_t> original;
+    std::vector<uint8_t> replacement;
+};
+
+// Everything needed to re-apply a successful patch to a fresh mapping of the same file without
+// rescanning: gate/kernel patches as RVAs plus the midpoint descriptor slots and the shared
+// corrected fatbin. Replaying this is memcpy-scale work; a full scan walks every section of a
+// multi-MB module and the midpoint rebuild walks and rewrites a ~100 KB PTX, all on the loading
+// thread.
+struct PathPatchSet
+{
+    std::wstring path;
+    std::vector<RvaPatch> patches;
+    unsigned int kernelContainers = 0;
+    std::vector<uint32_t> midpointSlotRvas;
+    void* midpointAllocation = nullptr; // process-lifetime VirtualAlloc, shared by all mappings of the file
+    std::string midpointDetail;
+    bool midpointApplied = false;
+};
+std::vector<PathPatchSet> g_patchSets;
+
+// Paths that already consumed a full scan this session (successful or not). Remaps of a known
+// file are replayed from g_patchSets; a known file whose content changed (or failed before) is
+// rescanned only after kFullScanMinInterval so a remap storm cannot burn the frame thread.
+std::vector<std::wstring> g_scannedPaths;
+std::chrono::steady_clock::time_point g_lastFullScan {};
+HMODULE g_deferredModule = nullptr; // a rate-limited scan to retry on a later call
+std::wstring g_deferredPath;
+constexpr auto kFullScanMinInterval = std::chrono::seconds(3);
+
+// Temporal (midpoint) correction state for the scan currently in flight. On success it is
+// converted into RVAs and moved into the path's PathPatchSet; the allocation itself lives for
+// the process because descriptors may reference it at any time.
 struct MidpointState
 {
     std::vector<MfgMidpoint::internal::SlotPatch> patches;
@@ -87,27 +131,17 @@ struct MidpointState
     bool applied = false;
 };
 MidpointState g_midpoint;
-std::vector<std::pair<HMODULE, MidpointState>> g_midpointByModule;
 
-void StoreMidpointForModule(HMODULE module)
+std::wstring ModulePath(HMODULE module)
 {
-    if (module == nullptr)
-        return;
-    g_midpointByModule.emplace_back(module, std::move(g_midpoint));
-    g_midpoint = MidpointState {};
-}
+    wchar_t path[MAX_PATH] {};
+    if (GetModuleFileNameW(module, path, MAX_PATH) == 0)
+        return {};
 
-bool RestoreMidpointForModule(HMODULE module)
-{
-    for (auto it = g_midpointByModule.begin(); it != g_midpointByModule.end(); ++it)
-    {
-        if (it->first != module)
-            continue;
-        g_midpoint = std::move(it->second);
-        g_midpointByModule.erase(it);
-        return true;
-    }
-    return false;
+    auto normalized = std::filesystem::path(path).lexically_normal().wstring();
+    for (auto& ch : normalized)
+        ch = static_cast<wchar_t>(std::towlower(ch));
+    return normalized;
 }
 
 bool AcquireModuleReference(HMODULE module, HMODULE& acquired)
@@ -428,6 +462,123 @@ bool BuildKernelPlan(HMODULE module, std::vector<Patch>& plan, unsigned int& con
     LOG_INFO("BuildKernelPlan finished: containers {} plan {}", containers, plan.size());
     return containers > 0;
 }
+
+// Re-applies a cached patch set to a fresh mapping of the same file. Returns false when the
+// mapping no longer matches (file changed under the same path); the caller then drops the cache
+// entry and falls back to a full scan.
+bool ApplyCachedSet(HMODULE module, const PathPatchSet& set)
+{
+    auto* base = reinterpret_cast<uint8_t*>(module);
+
+    for (const auto& patch : set.patches)
+    {
+        if (std::memcmp(base + patch.rva, patch.original.data(), patch.original.size()) != 0)
+            return false;
+    }
+
+    // Midpoint slots are implicit-verified below: a stale slot value would not point back into
+    // this image. A mismatch means the file layout changed; rescan instead of guessing.
+    if (set.midpointApplied)
+    {
+        const auto start = reinterpret_cast<uintptr_t>(base);
+        const auto imageSize = static_cast<uintptr_t>(MfgMidpoint::internal::kOuterHeader);
+
+        IMAGE_NT_HEADERS64* nt = nullptr;
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic == IMAGE_DOS_SIGNATURE)
+            nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (nt == nullptr || nt->Signature != IMAGE_NT_SIGNATURE)
+            return false;
+        const auto sizeOfImage = static_cast<uintptr_t>(nt->OptionalHeader.SizeOfImage);
+        if (sizeOfImage < imageSize)
+            return false;
+
+        for (const uint32_t slotRva : set.midpointSlotRvas)
+        {
+            if (static_cast<uintptr_t>(slotRva) + sizeof(uint64_t) > sizeOfImage)
+                return false;
+            uint64_t value = 0;
+            std::memcpy(&value, base + slotRva, sizeof(value));
+            if (value < start || value > start + sizeOfImage - imageSize)
+                return false;
+        }
+    }
+
+    for (const auto& patch : set.patches)
+    {
+        uint8_t* address = base + patch.rva;
+        DWORD originalProtection = 0;
+        if (!VirtualProtect(address, patch.replacement.size(), PAGE_EXECUTE_READWRITE, &originalProtection))
+        {
+            LOG_WARN("MFG unlock: cached apply VirtualProtect failed at {:X}", reinterpret_cast<uintptr_t>(address));
+            return false;
+        }
+
+        std::memcpy(address, patch.replacement.data(), patch.replacement.size());
+
+        DWORD ignored = 0;
+        VirtualProtect(address, patch.replacement.size(), originalProtection, &ignored);
+        FlushInstructionCache(GetCurrentProcess(), address, patch.replacement.size());
+    }
+
+    if (set.midpointApplied)
+    {
+        for (const uint32_t slotRva : set.midpointSlotRvas)
+        {
+            auto* slot = reinterpret_cast<uint64_t*>(base + slotRva);
+            DWORD oldProtection = 0;
+            if (VirtualProtect(slot, sizeof(uint64_t), PAGE_READWRITE, &oldProtection) == 0)
+            {
+                LOG_WARN("MFG unlock: cached midpoint slot protect failed at rva {:X}", slotRva);
+                continue;
+            }
+            *slot = reinterpret_cast<uint64_t>(set.midpointAllocation);
+            DWORD ignored = 0;
+            VirtualProtect(slot, sizeof(uint64_t), oldProtection, &ignored);
+        }
+    }
+
+    return true;
+}
+
+// Makes an already-patched module the current target again. No bytes change; only the status
+// view and the retained-handle bookkeeping move. Switching used to reset and rebuild the whole
+// Status on every flip, which the menu diagnostics surfaced as a flickering detection.
+void MakeCurrentRecorded(const ModuleRecord& record)
+{
+    const bool switching = g_retainedModule != record.module;
+    g_retainedModule = record.module;
+    g_attemptedModule = record.module;
+    g_attemptOutcome = AttemptOutcome::Succeeded;
+
+    g_status = MfgUnlock::Status();
+    g_status.ModuleFound = true;
+    g_status.SnippetVersion = ModuleVersion(record.module);
+    g_status.AdvertiseMatched = true;
+    g_status.ValidateMatched = true;
+    g_status.ArchGatesPatched = true;
+
+    const auto set = std::find_if(g_patchSets.begin(), g_patchSets.end(),
+                                  [&](const PathPatchSet& s) { return s.path == record.path; });
+    if (set != g_patchSets.end())
+    {
+        g_status.KernelsRewritten = set->kernelContainers;
+        g_status.MidpointCorrected = set->midpointApplied;
+        g_status.MidpointDetail = set->midpointDetail;
+    }
+
+    if (switching)
+    {
+        static unsigned int switchCount = 0;
+        const auto message = std::format("MFG unlock: current DLSSG module is now {:X} [{}]",
+                                         reinterpret_cast<uintptr_t>(record.module),
+                                         wstring_to_string(record.path));
+        if (++switchCount <= 3)
+            LOG_INFO("{}", message);
+        else
+            LOG_DEBUG("{}", message);
+    }
+}
 } // namespace
 
 bool MfgUnlock::PatchArchGates(HMODULE module)
@@ -469,56 +620,113 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
 
     std::lock_guard lock(g_mutex);
 
+    // A scan postponed by the rate limit gets one retry as soon as any later TryApply call finds
+    // the window open (the per-frame dispatch path guarantees one arrives within seconds while
+    // FG is active).
+    if (g_deferredModule != nullptr)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (g_lastFullScan.time_since_epoch().count() != 0 && now - g_lastFullScan >= kFullScanMinInterval)
+        {
+            wchar_t checkPath[MAX_PATH] {};
+            bool alive = GetModuleFileNameW(g_deferredModule, checkPath, MAX_PATH) != 0;
+            auto deferred = g_deferredModule;
+            std::wstring deferredPath;
+            if (alive)
+            {
+                deferredPath = ModulePath(deferred);
+                alive = !deferredPath.empty() && deferredPath == g_deferredPath;
+            }
+            g_deferredModule = nullptr;
+            g_deferredPath.clear();
+
+            if (alive)
+            {
+                LOG_DEBUG("MFG unlock: retrying deferred scan for {:X} [{}]",
+                          reinterpret_cast<uintptr_t>(deferred), wstring_to_string(deferredPath));
+                requestedModule = deferred;
+            }
+        }
+    }
+
     auto module = requestedModule ? requestedModule : GetModuleHandleW(L"nvngx_dlssg.dll");
     if (module == nullptr)
         return;
 
-    if (g_attemptOutcome != AttemptOutcome::WaitingForModule)
+    if (g_attemptOutcome == AttemptOutcome::Succeeded && module == g_retainedModule)
+        return;
+
+    const auto path = ModulePath(module);
+
+    // 1) A mapping already patched this session: make it current again without touching bytes.
+    for (const auto& record : g_patchedModules)
     {
-        if (g_attemptOutcome != AttemptOutcome::Succeeded || module == g_attemptedModule || module == g_retainedModule)
-            return;
-
-        // Already patched earlier this session: restore remembered success, reuse its retained mapping.
-        auto patched = std::find(g_patchedModules.begin(), g_patchedModules.end(), module);
-        if (patched != g_patchedModules.end())
+        if (record.module == module)
         {
-            LOG_INFO("MFG unlock: switching back to already-patched module {}", reinterpret_cast<void*>(module));
-            g_patchedModules.erase(patched);
-            // The current target is also a patched module: keep it remembered for the next switch.
-            if (g_retainedModule != nullptr)
-            {
-                g_patchedModules.push_back(g_retainedModule);
-                StoreMidpointForModule(g_retainedModule);
-            }
-            g_retainedModule = module;
-            g_attemptedModule = module;
-            g_status = Status();
-            g_status.ModuleFound = true;
-            g_status.SnippetVersion = ModuleVersion(module);
-            g_status.AdvertiseMatched = true;
-            g_status.ValidateMatched = true;
-            g_status.ArchGatesPatched = true;
-            g_attemptOutcome = AttemptOutcome::Succeeded;
-            RestoreMidpointForModule(module);
-            g_status.MidpointCorrected = g_midpoint.applied;
+            MakeCurrentRecorded(record);
             return;
         }
-
-        LOG_INFO("MFG unlock: new DLSSG OTA module detected, updating patch target to {}", reinterpret_cast<void*>(module));
-        // Keep the previous mapping alive: it stays patched and may become the target again.
-        if (g_retainedModule != nullptr)
-        {
-            g_patchedModules.push_back(g_retainedModule);
-            StoreMidpointForModule(g_retainedModule);
-            g_retainedModule = nullptr;
-        }
-        g_status = Status();
-        g_attemptOutcome = AttemptOutcome::WaitingForModule;
-        g_attemptedModule = nullptr;
     }
 
+    // 2) A fresh mapping of a file already patched this session: replay the cached RVA plan.
+    //    The midpoint fatbin allocation is shared by every mapping of the file.
+    if (!path.empty())
+    {
+        auto set = std::find_if(g_patchSets.begin(), g_patchSets.end(),
+                                [&](const PathPatchSet& s) { return s.path == path; });
+        if (set != g_patchSets.end())
+        {
+            if (ApplyCachedSet(module, *set))
+            {
+                LOG_DEBUG("MFG unlock: remapped {:X} [{}]; replayed cached patch set",
+                          reinterpret_cast<uintptr_t>(module), wstring_to_string(path));
+                HMODULE acquired = nullptr;
+                if (!AcquireModuleReference(module, acquired))
+                {
+                    g_status.PatchFailed = true;
+                    g_attemptOutcome = AttemptOutcome::FailedBeforeMutation;
+                    LOG_WARN("MFG unlock: could not retain the remapped DLSSG module");
+                    return;
+                }
+                g_patchedModules.push_back({ acquired, path });
+                MakeCurrentRecorded(g_patchedModules.back());
+                return;
+            }
+
+            LOG_WARN("MFG unlock: cached patch set no longer matches [{}]; rescanning", wstring_to_string(path));
+            g_patchSets.erase(set);
+        }
+    }
+
+    // 3) Unknown or changed file: full scan + patch. Known paths are rate-limited so a remap
+    //    storm (the HSR startup flip-flop) costs at most one scan per interval; a file never
+    //    seen before always scans immediately.
+    //
+    // Reset before anything else. Reaching here means either a never-seen file or a file whose
+    // cached patch set ApplyCachedSet just proved stale (the content changed under the same path).
+    // In the stale case g_status still holds the last success (AdvertiseMatched = true etc.); a
+    // reset is needed before the rate-limit check too, because a deferred scan returns here with
+    // those stale bits still set, and for up to the deferral window EffectiveMax() would keep
+    // reporting 5 on a module whose gates are not actually unlocked -- the HSR 2x-clamp symptom.
+    // The success path below re-sets every field, so clearing here is safe.
+    g_status = MfgUnlock::Status();
     g_attemptedModule = module;
     g_status.ModuleFound = true;
+
+    const bool seenBefore = !path.empty() &&
+                            std::find(g_scannedPaths.begin(), g_scannedPaths.end(), path) != g_scannedPaths.end();
+    const auto now = std::chrono::steady_clock::now();
+    if (seenBefore && g_lastFullScan.time_since_epoch().count() != 0 && now - g_lastFullScan < kFullScanMinInterval)
+    {
+        g_deferredModule = module;
+        g_deferredPath = path;
+        LOG_DEBUG("MFG unlock: scan of {:X} [{}] deferred by the rate limit",
+                  reinterpret_cast<uintptr_t>(module), wstring_to_string(path));
+        return;
+    }
+    g_lastFullScan = now;
+    if (!path.empty() && !seenBefore)
+        g_scannedPaths.push_back(path);
     HMODULE acquired = nullptr;
     if (!AcquireModuleReference(module, acquired))
     {
@@ -576,17 +784,11 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     g_status.ValidateMatched = true;
     g_status.ArchGatesPatched = true;
     g_status.KernelsRewritten = kernelContainers;
-    g_retainedModule = acquired;
     g_attemptOutcome = AttemptOutcome::Succeeded;
-    wchar_t patchedPath[MAX_PATH]{};
-    const DWORD patchedPathLength = GetModuleFileNameW(module, patchedPath, MAX_PATH);
-    LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames (kernels rewritten: {}) - module {:X} [{}]",
-             kMaxGeneratedFrames, kernelContainers, reinterpret_cast<uintptr_t>(module),
-             wstring_to_string(std::wstring(patchedPath, patchedPathLength)));
 
     // Temporal correction is best-effort after the gates are confirmed: a failed redirect leaves the
     // module at duplicate-frame behavior but never invalidates the gate unlock, so it is not fatal.
-    if (Config::Instance()->FGDLSSGAdaMidpointFix.value_or_default())
+    if (useMidpointFix)
     {
         std::string detail;
         if (MfgMidpoint::Redirect(module, g_midpoint.patches, g_midpoint.allocation, detail))
@@ -602,6 +804,41 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             LOG_WARN("MFG unlock: midpoint correction skipped - {}", detail);
         }
     }
+
+    // Cache the plan keyed by path so a later remap replays it without rescanning. The retained
+    // handle keeps this mapping alive alongside any sibling mappings of the same or other files.
+    PathPatchSet set;
+    set.path = path;
+    set.kernelContainers = kernelContainers;
+    const auto* base = reinterpret_cast<const uint8_t*>(module);
+    for (const auto& patch : plan)
+    {
+        const auto rva = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(patch.address) -
+                                               reinterpret_cast<uintptr_t>(base));
+        set.patches.push_back({ rva, patch.original, patch.replacement });
+    }
+    if (g_midpoint.applied)
+    {
+        for (const auto& slotPatch : g_midpoint.patches)
+        {
+            const auto rva = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(slotPatch.slot) -
+                                                   reinterpret_cast<uintptr_t>(base));
+            set.midpointSlotRvas.push_back(rva);
+        }
+        set.midpointAllocation = g_midpoint.allocation;
+        set.midpointDetail = g_status.MidpointDetail;
+        set.midpointApplied = true;
+        g_midpoint = MidpointState {}; // ownership moved into the cache
+    }
+    g_patchSets.push_back(std::move(set));
+
+    g_retainedModule = acquired;
+    g_patchedModules.push_back({ acquired, path });
+    wchar_t patchedPath[MAX_PATH]{};
+    const DWORD patchedPathLength = GetModuleFileNameW(module, patchedPath, MAX_PATH);
+    LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames (kernels rewritten: {}) - module {:X} [{}]",
+             kMaxGeneratedFrames, kernelContainers, reinterpret_cast<uintptr_t>(module),
+             wstring_to_string(std::wstring(patchedPath, patchedPathLength)));
 }
 
 unsigned int MfgUnlock::UnlockedMax()

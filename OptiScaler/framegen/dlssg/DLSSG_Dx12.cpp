@@ -332,6 +332,23 @@ void DLSSG_Dx12::Activate()
 
         UpdateTarget();
         _isActive = true;
+
+        // Streamline's dlfgPresent path checks "is Reflex active?" on the very first present
+        // after FG turns on. If DLSSG SetOptions (sent in the next Dispatch) reaches the runtime
+        // before Reflex SetOptions does, that first present logs
+        // eDLSSGStatusFailReflexNotDetectedAtRuntime and the FG frame is dropped (visible as a
+        // flash). Send Reflex first, here, so it is already active when DLSSG starts presenting.
+        // Deactivate() invalidated _reflexOptionsValid, so the next Dispatch will still resend it
+        // in the normal path; this one just front-loads the first one.
+        sl::ReflexOptions reflexConst = {};
+        reflexConst.mode = sl::ReflexMode::eLowLatency;
+        reflexConst.useMarkersToOptimize = ReflexHooks::gameIsSendingMarkers();
+        if (StreamlineProxy::ReflexSetOptions()(reflexConst) == sl::Result::eOk)
+        {
+            _lastReflexMarkersSent = reflexConst.useMarkersToOptimize;
+            _reflexOptionsValid = true;
+            _reflexOptionsSentAtPresent = _fgFramePresentId;
+        }
     }
 }
 
@@ -341,15 +358,34 @@ void DLSSG_Dx12::Deactivate()
 
     if (_isActive)
     {
-        sl::DLSSGOptions options {};
-        options.mode = sl::DLSSGMode::eOff;
-        options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
-        StreamlineProxy::DLSSGSetOptions()(viewport, options); // Potential crash point on exit
+        if (Config::Instance()->FGDLSSGSoftPause.value_or_default())
+        {
+            // Soft pause: stop dispatching but do NOT send sl::DLSSGMode::eOff. Sending eOff makes
+            // Streamline's dlfgPresent release the entire NGX DLSS-G feature ("sl.dlss_g turned off,
+            // releasing all resources"), and the next Activate() then rebuilds it via
+            // NVSDK_NGX_CreateFeature (~185ms hitch). Keeping the feature alive makes Activate a cheap
+            // mode resume. OptiScaler stops feeding SetConstants/SetResource while _isActive==false, so
+            // Streamline has no new frame data to interpolate on. Streamline still releases the feature
+            // on sl::Shutdown (Shutdown() -> StreamlineProxy::Shutdown).
+            LOG_DEBUG("Soft pause: retaining NGX DLSS-G feature (no eOff sent)");
+        }
+        else
+        {
+            sl::DLSSGOptions options {};
+            options.mode = sl::DLSSGMode::eOff;
+            options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
+            StreamlineProxy::DLSSGSetOptions()(viewport, options); // Potential crash point on exit
 
-        sl::ReflexOptions reflexConst = {};
-        reflexConst.mode = sl::ReflexMode::eOff;
-        reflexConst.useMarkersToOptimize = false;
-        StreamlineProxy::ReflexSetOptions()(reflexConst);
+            sl::ReflexOptions reflexConst = {};
+            reflexConst.mode = sl::ReflexMode::eOff;
+            reflexConst.useMarkersToOptimize = false;
+            StreamlineProxy::ReflexSetOptions()(reflexConst);
+        }
+
+        // The next Activate() must resend both option sets; the caches describe the
+        // pre-deactivate state, not the eOff pair sent above.
+        _dlssgOptionsValid = false;
+        _reflexOptionsValid = false;
 
         _isActive = false;
     }
@@ -409,7 +445,7 @@ bool DLSSG_Dx12::Dispatch()
     auto& state = State::Instance();
 
     int requestedFramesToInterpolate = Config::Instance()->FGDLSSGInterpolationCount.value_or_default();
-    LOG_INFO("Dispatch interpolation diag: config {}, max {}", requestedFramesToInterpolate, _maxInterpolationCount);
+    LOG_DEBUG("Dispatch interpolation diag: config {}, max {}", requestedFramesToInterpolate, _maxInterpolationCount);
     if (requestedFramesToInterpolate > _maxInterpolationCount)
     {
         requestedFramesToInterpolate = _maxInterpolationCount;
@@ -433,30 +469,73 @@ bool DLSSG_Dx12::Dispatch()
     }
 
     StreamlineHooks::applyMenuDlssgInterlock(options, true);
-    LOG_INFO("SetOptions before: mode {} num {} structVer {} extFG {}",
-             magic_enum::enum_name(options.mode), options.numFramesToGenerate, options.structVersion,
-             State::Instance().externalFrameGeneration);
-    auto dlssgSetOptionsResult = StreamlineProxy::DLSSGSetOptions()(viewport, options);
-    // "num" is our request, not the runtime's acceptance. The runtime clamps
-    // numFramesToGenerate to its own numFramesToGenerateMax and still returns eOk, so a
-    // request above the effective maximum silently drops back to 2x. Reading it as
-    // acceptance here is what made a 2x session look like a 5x one in the logs.
-    LOG_INFO("SetOptions after: result {} requestedNum {} runtimeMax {} runtimeReportedMax {} status {:X}",
-             magic_enum::enum_name(dlssgSetOptionsResult), options.numFramesToGenerate,
-             _maxInterpolationCount, _runtimeReportedMaxInterpolation, _runtimeReportedStatus);
+
+    // Only touch the runtime when something changed, plus a keepalive every 600 presents
+    // (~20 s at HSR's 30 fps base) in case the runtime dropped the options on its own.
+    constexpr uint64_t kOptionsKeepalivePresents = 600;
+    const bool dlssgOptionsChanged =
+        !_dlssgOptionsValid || options.mode != _lastDlssgModeSent ||
+        options.numFramesToGenerate != _lastDlssgNumSent ||
+        (options.mode == sl::DLSSGMode::eDynamic && options.dynamicTargetFrameRate != _lastDlssgDynamicTargetSent);
+    const bool dlssgKeepaliveDue =
+        _dlssgOptionsValid && (_fgFramePresentId - _dlssgOptionsSentAtPresent) >= kOptionsKeepalivePresents;
+
+    sl::Result dlssgSetOptionsResult = sl::Result::eOk;
+    if (dlssgOptionsChanged || dlssgKeepaliveDue)
+    {
+        LOG_INFO("SetOptions before: mode {} num {} structVer {} extFG {} keepalive {}",
+                 magic_enum::enum_name(options.mode), options.numFramesToGenerate, options.structVersion,
+                 State::Instance().externalFrameGeneration, dlssgKeepaliveDue && !dlssgOptionsChanged);
+        dlssgSetOptionsResult = StreamlineProxy::DLSSGSetOptions()(viewport, options);
+        // "num" is our request, not the runtime's acceptance. The runtime clamps
+        // numFramesToGenerate to its own numFramesToGenerateMax and still returns eOk, so a
+        // request above the effective maximum silently drops back to 2x. Reading it as
+        // acceptance here is what made a 2x session look like a 5x one in the logs.
+        LOG_INFO("SetOptions after: result {} requestedNum {} runtimeMax {} runtimeReportedMax {} status {:X}",
+                 magic_enum::enum_name(dlssgSetOptionsResult), options.numFramesToGenerate,
+                 _maxInterpolationCount, _runtimeReportedMaxInterpolation, _runtimeReportedStatus);
+
+        if (dlssgSetOptionsResult == sl::Result::eOk)
+        {
+            _lastDlssgModeSent = options.mode;
+            _lastDlssgNumSent = options.numFramesToGenerate;
+            _lastDlssgDynamicTargetSent = options.dynamicTargetFrameRate;
+            _dlssgOptionsValid = true;
+            _dlssgOptionsSentAtPresent = _fgFramePresentId;
+        }
+        else
+        {
+            _dlssgOptionsValid = false; // retry on the next dispatch
+        }
+    }
 
     if (!CommitDlssgDispatchOptions(dlssgSetOptionsResult, options, _framesToInterpolate))
         return false;
 
-    sl::ReflexOptions reflexConst = {};
-    reflexConst.mode = sl::ReflexMode::eLowLatency;
-    reflexConst.useMarkersToOptimize = ReflexHooks::gameIsSendingMarkers();
+    const bool markers = ReflexHooks::gameIsSendingMarkers();
+    const bool reflexChanged = !_reflexOptionsValid || markers != _lastReflexMarkersSent;
+    const bool reflexKeepaliveDue =
+        _reflexOptionsValid && (_fgFramePresentId - _reflexOptionsSentAtPresent) >= kOptionsKeepalivePresents;
 
-    auto reflexSetOptionsResult = StreamlineProxy::ReflexSetOptions()(reflexConst);
-
-    if (reflexSetOptionsResult != sl::Result::eOk)
+    if (reflexChanged || reflexKeepaliveDue)
     {
-        LOG_ERROR("Couldn't set Reflex options, error: {}", magic_enum::enum_name(reflexSetOptionsResult));
+        sl::ReflexOptions reflexConst = {};
+        reflexConst.mode = sl::ReflexMode::eLowLatency;
+        reflexConst.useMarkersToOptimize = markers;
+
+        auto reflexSetOptionsResult = StreamlineProxy::ReflexSetOptions()(reflexConst);
+
+        if (reflexSetOptionsResult != sl::Result::eOk)
+        {
+            LOG_ERROR("Couldn't set Reflex options, error: {}", magic_enum::enum_name(reflexSetOptionsResult));
+            _reflexOptionsValid = false;
+        }
+        else
+        {
+            _lastReflexMarkersSent = markers;
+            _reflexOptionsValid = true;
+            _reflexOptionsSentAtPresent = _fgFramePresentId;
+        }
     }
 
     if (!_haveHudless.has_value())
@@ -966,9 +1045,14 @@ bool DLSSG_Dx12::Present()
         }
     }
 
-    if ((_fgFramePresentId - _lastFGFramePresentId) > 3 && IsActive() && !_waitingNewFrameData)
+    // Pause FG (and release its resources via Deactivate) only after this many presents have gone by
+    // without a new source frame. See Config.h FGDLSSGPausePresentGap for why the default is raised
+    // for HSR DX11: a sub-second game-thread stall (camera cut / ultimate) must not trigger the
+    // ~185ms NVSDK_NGX_CreateFeature rebuild that happens on resume.
+    const UINT64 pausePresentGap = (UINT64)Config::Instance()->FGDLSSGPausePresentGap.value_or_default();
+    if ((_fgFramePresentId - _lastFGFramePresentId) > pausePresentGap && IsActive() && !_waitingNewFrameData)
     {
-        LOG_DEBUG("Pausing FG");
+        LOG_DEBUG("Pausing FG (present gap {} > {})", _fgFramePresentId - _lastFGFramePresentId, pausePresentGap);
         Deactivate();
         _waitingNewFrameData = true;
         return false;

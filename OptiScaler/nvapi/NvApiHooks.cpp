@@ -181,6 +181,43 @@ NvAPI_Status __stdcall NvApiHooks::hkNvAPI_DRS_GetSetting(NvDRSSessionHandle hSe
     auto result = o_NvAPI_DRS_GetSetting(hSession, hProfile, settingId, pSetting);
     if (pSetting && result == NVAPI_OK)
     {
+        // -----------------------------------------------------------------------
+        // Ada MFG unlock: driver profiles can pin DLSS-G to 2x.
+        //
+        // DRS 0x104D6667 ("DLSS-FG Multi-Frame Generation Count"):
+        //   0 / N/A  = follow the app / Streamline option
+        //   1        = force 1 generated frame (2x total)
+        //   3 / 5    = force 4x / 6x, etc.
+        //
+        // Some titles ship that key = 1 in their driver profile even when
+        // requestedNum is 5 with status eOk, so presentCommon stays at 2x.
+        // Clearing the value for this process lets OptiScaler-owned FG and the
+        // Ada unlock actually reach 3x-6x. Does not rewrite the on-disk profile.
+        // -----------------------------------------------------------------------
+        constexpr NvU32 kDrsMfgCountOverride = 0x104D6667;
+        constexpr NvU32 kDrsMfgDynamicMax = 0x10562D0F;
+
+        const bool adaUnlock = Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default() &&
+                               !Config::Instance()->FGDLSSGAmpereMfgUnlock.value_or_default() &&
+                               !State::Instance().externalFrameGeneration;
+
+        if (adaUnlock && (settingId == kDrsMfgCountOverride || settingId == kDrsMfgDynamicMax))
+        {
+            if (pSetting->settingType == NVDRS_DWORD_TYPE && pSetting->u32CurrentValue != 0)
+            {
+                static bool saidMfgClamp = false;
+                if (!saidMfgClamp)
+                {
+                    saidMfgClamp = true;
+                    LOG_INFO("Ada MFG: clearing DRS 0x{:X} clamp (was {}) so OptiScaler-owned FG can follow "
+                             "InterpolationCount / runtime max",
+                             settingId, pSetting->u32CurrentValue);
+                }
+                pSetting->u32CurrentValue = 0;
+                pSetting->isCurrentPredefined = 0;
+            }
+        }
+
         constexpr NvU32 streamlineOverrideId = 0x10E41E06;
         if (settingId == streamlineOverrideId && State::Instance().gameName == "KCD2" &&
             State::Instance().activeFgOutput == FGOutput::DLSSG && !State::Instance().externalFrameGeneration)

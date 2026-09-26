@@ -3,6 +3,8 @@
 #include <Config.h>
 #include <low_latency/input/input_common.h>
 
+#include <atomic>
+
 int IFGFeature::GetIndex() { return (_frameCount % BUFFER_COUNT); }
 
 int IFGFeature::GetIndexWillBeDispatched()
@@ -39,8 +41,16 @@ UINT64 IFGFeature::StartNewFrame()
 
     if (_lastDispatchedFrame == 0 || (_frameCount - _lastDispatchedFrame) > 2)
     {
-        LOG_WARN("Frame count jumped too much! _frameCount: {}, _lastDispatchedFrame: {}", _frameCount,
-                 _lastDispatchedFrame);
+        // Rate-limit the warning: a dispatch skip can repeat every frame for a stretch (observed
+        // ten consecutive warns in HSR logs) and drowns the log without adding information.
+        static std::atomic<unsigned int> jumpWarnCount { 0 };
+        const unsigned int n = jumpWarnCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 5 || n % 120 == 0)
+            LOG_WARN("Frame count jumped too much! _frameCount: {}, _lastDispatchedFrame: {}", _frameCount,
+                     _lastDispatchedFrame);
+        else
+            LOG_DEBUG("Frame count jumped too much! _frameCount: {}, _lastDispatchedFrame: {}", _frameCount,
+                      _lastDispatchedFrame);
 
         _lastDispatchedFrame = _frameCount - 1;
     }

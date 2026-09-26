@@ -28,6 +28,21 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     // runtime degrades (no Reflex at runtime, GetCurrentBackBufferIndex not called, ...).
     unsigned _runtimeReportedStatus = 0;
 
+    // Dispatch() runs at present rate and used to resend identical DLSSG/Reflex options every
+    // frame (thousands of SetOptions calls per session in HSR, each one a driver round-trip).
+    // The runtime only needs a fresh call when a value actually changes, plus a rare keepalive
+    // in case a runtime reset silently dropped them. Deactivate() invalidates both caches
+    // because it sends eOff outside of Dispatch.
+    sl::DLSSGMode _lastDlssgModeSent = sl::DLSSGMode::eOff;
+    unsigned int _lastDlssgNumSent = 0;
+    float _lastDlssgDynamicTargetSent = 0.0f;
+    bool _dlssgOptionsValid = false;
+    uint64_t _dlssgOptionsSentAtPresent = 0;
+
+    bool _lastReflexMarkersSent = false;
+    bool _reflexOptionsValid = false;
+    uint64_t _reflexOptionsSentAtPresent = 0;
+
   protected:
     void ReleaseObjects() override final;
     void CreateObjects(ID3D12Device* InDevice) override final;

@@ -898,6 +898,18 @@ class Config
     CustomOptional<bool> FGDLSSGOverrideForceDMFG { false };   // Overrides game's DLSSG mode to Dynamic
     CustomOptional<bool> FGDLSSGForceDMFG { false };           // Overrides Opti's DLSSG mode to Dynamic
     CustomOptional<float> FGDLSSGFramerateTargetDMFG { 0.0f }; // 0.0 means auto-detects the display refresh rate
+    // Number of FG presents without a new source frame (EvaluateFeature) before FG is paused and its
+    // resources released. Upstream default is 3: any 4-present gap (a sub-second game-thread stall on
+    // HSR DX11, e.g. camera cut / ultimate) trips it, and the resume calls NVSDK_NGX_CreateFeature to
+    // rebuild the whole DLSS-G feature (~185ms hitch). Raising it keeps transient stalls from
+    // triggering the release+rebuild while still releasing on genuine long idles (loading screens).
+    CustomOptional<int> FGDLSSGPausePresentGap { 3 };
+    // Soft pause: Deactivate() stops dispatching but does NOT send sl::DLSSGMode::eOff to Streamline,
+    // so Streamline keeps the NGX DLSS-G feature and its resources alive. Without this, every
+    // Deactivate (pause on stall, !FGEnabled flicker, fgChanged) makes Streamline release the feature,
+    // and the next Activate rebuilds it via NVSDK_NGX_CreateFeature (~185ms hitch). With it, Activate
+    // just resumes the existing feature. Streamline still releases everything on sl::Shutdown.
+    CustomOptional<bool> FGDLSSGSoftPause { false };
 
     // As per
     // https://github.com/artur-graniszewski/dlss-enabler-main/blob/a92464d468eb0d91ae17befa66c6bf6229f20b9f/Utils/DlssgProxy.cpp#L1033

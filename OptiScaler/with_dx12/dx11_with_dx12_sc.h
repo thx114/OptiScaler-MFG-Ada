@@ -107,6 +107,14 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
 
     ID3D12Device* _dx12Device = nullptr;
     ID3D12CommandQueue* _dx12CommandQueue = nullptr;
+    // Dedicated COMPUTE queue for the DX11->DX12 interop copy. The copy previously ran on the
+    // DIRECT queue alongside the game's rendering and DLSS-G's dispatch, so every backbuffer
+    // copy serialized against the render workload and amplified camera-cut/ultimate stalls into
+    // multi-hundred-ms hitches. A separate COMPUTE queue lets the copy run on a different GPU
+    // engine in parallel with the 3D queue. Cross-queue synchronization stays fence-based:
+    // _WaitDx11ThenDx12 makes the copy queue wait on the D3D11 shared fence, and
+    // _WaitForInteropCopyOnPresentQueue makes the FG/DIRECT queue wait on the copy fence.
+    ID3D12CommandQueue* _copyQueue = nullptr;
     std::vector<ID3D12CommandAllocator*> _copyAllocators;
     std::vector<ID3D12GraphicsCommandList*> _copyCommandLists;
 
