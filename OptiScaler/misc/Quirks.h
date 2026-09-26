@@ -156,6 +156,15 @@ static const QuirkEntry quirkTable[] = {
     // Trails in the Sky 1st Chapter
     QUIRK_ENTRY("sora_1st.exe", GameQuirk::UseFsr2Dx11Inputs, GameQuirk::DisableDxgiSpoofing),
 
+    // Genshin Impact (YuanShen.exe 国服 / GenshinImpact.exe 国际服)
+    // Unity + DX11 + FSR2 静态链接，exe 不导出 ffxFsr2* 符号 → OptiScaler 的
+    // HookFSR2Dx11ExeInputs 默认检测不到。配合 Dx11FsrBridge 的 GetProcAddress
+    // shim（feat/restore-shim 分支），桥导出 6 个 ffxFsr2* 桩 + Detours hook
+    // GetProcAddress，让 OptiScaler 的 exe 扫描命中桥的桩 → DLSS detour 链。
+    // UseFsr2Dx11Inputs 让 dllmain 走 HookFSR2Dx11ExeInputs 而非默认 DX12 路径。
+    QUIRK_ENTRY("YuanShen.exe", GameQuirk::UseFsr2Dx11Inputs),
+    QUIRK_ENTRY("GenshinImpact.exe", GameQuirk::UseFsr2Dx11Inputs),
+
     // NINJA GAIDEN 4
     // No spoof needed for DLSS inputs, Hudfix incompatible
     QUIRK_ENTRY("ninjagaiden4-steam.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::DisableResizeSkip,
