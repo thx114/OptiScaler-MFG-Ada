@@ -244,7 +244,10 @@ void DlssNr_Dx12::Retire(std::unique_ptr<DlssNr_Dx12> owner)
     if (!owner) return;
     std::lock_guard lock(nrOwnersMutex);
     const bool wasActive = (activeNrOwner == owner.get());
-    if (wasActive) activeNrOwner = nullptr;
+    // Do NOT set activeNrOwner to nullptr: FinishedPicture NR is passive and must remain active
+    // across multiple frames even while the previous work completes. When Feature is destroyed,
+    // the ~IFeature_Dx12 will call Retire() again and that's when activeNrOwner is truly no longer valid.
+    // if (wasActive) activeNrOwner = nullptr;  // REMOVED: keeps owner active for FinishedPicture
     DlssNr::ClearStatus(owner.get());
     {
         std::lock_guard stateLock(owner->_state->mutex);
@@ -255,7 +258,8 @@ void DlssNr_Dx12::Retire(std::unique_ptr<DlssNr_Dx12> owner)
             if (slot.commands) owner->_state->FinishedPictureResetCommandList(slot.commands.Get());
     }
     RetiredNrOwners().push_back(std::move(owner));
-    LOG_INFO("DLSS-NR: retire owner (wasActive={}), retaining until recordings finish; {} waiting", wasActive, RetiredNrOwners().size());
+    LOG_WARN("DLSS-NR: retire owner (wasActive={}, kept active=true), readyToDestroy pending, nrOwners.size={}, retired={}",
+             wasActive, nrOwners.size(), RetiredNrOwners().size());
 }
 
 bool DlssNr_Dx12::ReadyToDestroy()
