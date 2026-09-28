@@ -764,8 +764,13 @@ void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue
                                   ::State::Instance().activeFgOutput == FGOutput::DLSSG;
 
     // Swapchain calls must precede NR locks: FG Present can submit commands while holding its own lock.
+    // For Dx11wDx12 wrapper, NR should not run when external FG is active (already handled in bridge).
+    // For Dx12 native path, NR should still run regardless of FG state.
+    const bool isBridgePath = ::State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
+    const bool shouldSkipForExternal = isBridgePath && externalFgActive;
+
     if (swapchain && queue && config.DlssNrEnabled.value_or_default() &&
-        config.DlssNrFinishedPicture.value_or_default() && !externalFgActive)
+        config.DlssNrFinishedPicture.value_or_default() && !shouldSkipForExternal)
     {
         if (StreamlinePicture::RenderQueue(swapchain) || FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&chain))) ||
             FAILED(chain->GetBuffer(chain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&picture))))
@@ -776,7 +781,7 @@ void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue
     if (activeNrOwner)
         activeNrOwner->ApplyFinished(picture.Get(), queue, space);
     else if (swapchain && queue && config.DlssNrEnabled.value_or_default() && config.DlssNrFinishedPicture.value_or_default())
-        LOG_DEBUG("NR bridge: activeNrOwner is nullptr, skipping ApplyFinished (nrOwners.size={}, externalFgActive={})", nrOwners.size(), externalFgActive);
+        LOG_DEBUG("NR bridge: activeNrOwner is nullptr, skipping ApplyFinished (nrOwners.size={}, isBridgePath={}, externalFgActive={})", nrOwners.size(), isBridgePath, externalFgActive);
 }
 // Dx11wDx12SC::Present calls this before _fgSwapChain->Present: the current backbuffer is
 // the game's real frame at that moment, so finished-picture NR is valid even with FG active.
