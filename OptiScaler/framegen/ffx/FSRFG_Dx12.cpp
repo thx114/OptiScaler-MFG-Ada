@@ -759,8 +759,30 @@ ffxReturnCode_t FSRFG_Dx12::DispatchCallback(ffxDispatchDescFrameGeneration* par
         }
     }
 
+    // FFX FG requires presentColor.format == context backBufferFormat, OR a valid HudlessColor.
+    // Genshin's swapchain desc carries Format 29 (R8G8B8A8_UNORM_SRGB) while the actual present
+    // resource handed to dispatch may be 28 (R8G8B8A8_UNORM), or vice versa — either way FFX rejects
+    // the dispatch (result 3 -> black interpolated frames) when no bridge-fed HudlessColor is present.
+    // SRGB and UNORM share the same memory layout, so force the reported presentColor format to the
+    // backbuffer format unconditionally (diagnostic below shows both values).
+    FfxApiSurfaceFormat origPresentFormat = (FfxApiSurfaceFormat) params->presentColor.description.format;
+    bool reconciledFormat = false;
+    LOG_WARN("FSRFG DispatchCallback: presentColor={}, backBuffer={}",
+             (uint32_t) origPresentFormat, (uint32_t) _backBufferFormat);
+    if (_backBufferFormat != FFX_API_SURFACE_FORMAT_UNKNOWN &&
+        origPresentFormat != _backBufferFormat)
+    {
+        params->presentColor.description.format = (uint32_t) _backBufferFormat;
+        reconciledFormat = true;
+        LOG_WARN("FSRFG: forced presentColor format {} -> {} (backbuffer) for dispatch",
+                 (uint32_t) origPresentFormat, (uint32_t) _backBufferFormat);
+    }
+
     auto dispatchResult = FfxApiProxy::D3D12_Dispatch(&_fgContext, &params->header);
     LOG_DEBUG("D3D12_Dispatch result: {}, fIndex: {}", (UINT) dispatchResult, fIndex);
+
+    if (reconciledFormat)
+        params->presentColor.description.format = (uint32_t) origPresentFormat;
 
     _lastFrameId = params->frameID;
 
@@ -1139,6 +1161,7 @@ void FSRFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
         createFg.flags |= FFX_FRAMEGENERATION_ENABLE_DEBUG_CHECKING;
 
     createFg.backBufferFormat = ffxApiGetSurfaceFormatDX12(desc.BufferDesc.Format);
+    _backBufferFormat = (FfxApiSurfaceFormat) createFg.backBufferFormat;
 
     if (_lastHudlessFormat != FFX_API_SURFACE_FORMAT_UNKNOWN)
     {
@@ -1175,7 +1198,8 @@ void FSRFG_Dx12::CreateContext(ID3D12Device* device, FG_Constants& fgConstants)
         ScopedSkipHeapCapture skipHeapCapture {};
         ffxReturnCode_t retCode = FfxApiProxy::D3D12_CreateContext(&_fgContext, &createFg.header, nullptr);
 
-        LOG_INFO("D3D12_CreateContext result: {:X}", retCode);
+        LOG_INFO("D3D12_CreateContext result: {:X} (backBufferFormat={})",
+                 retCode, (uint32_t) createFg.backBufferFormat);
         _isActive = (retCode == FFX_API_RETURN_OK);
         _lastDispatchedFrame = 0;
     }

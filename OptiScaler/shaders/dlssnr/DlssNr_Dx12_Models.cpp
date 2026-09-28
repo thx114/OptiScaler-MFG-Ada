@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "DlssNr_Dx12_State.h"
 
 DlssNr::Proxy::Settings DlssNr_Dx12::State::ModelSettings(const Config& cfg, unsigned int pass)
@@ -10,18 +10,24 @@ DlssNr::Proxy::Settings DlssNr_Dx12::State::ModelSettings(const Config& cfg, uns
 
 bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device,
                                         const DlssNrFrameInfo& frame, const D3D12_RESOURCE_DESC& desc,
-                                        DlssNr::ColorExtent native, DlssNr::ColorExtent work,
+                                        DlssNr::ColorExtent native, DlssNr::ColorExtent work, DlssNr::ColorExtent laterWork,
                                         float workScale, unsigned int requestedPasses)
 {
     const auto& cfg = *Config::Instance();
     const auto width = native.width, height = native.height;
     const auto workWidth = work.width, workHeight = work.height;
+    const auto laterWorkWidth = laterWork.width, laterWorkHeight = laterWork.height;
+    // The ping-pong and clamp rasters serve every pass, so they must hold the larger of the two
+    // working sizes; a given frame's dispatch only touches the region its pass uses.
+    const auto passWidth = std::max(workWidth, laterWorkWidth);
+    const auto passHeight = std::max(workHeight, laterWorkHeight);
     const bool cropColor = frame.BeforeUpscale && (width != desc.Width || height != desc.Height);
     const bool reduced = workWidth != width || workHeight != height;
     ReleaseSurfacesIfFormatChanged(desc.Format);
 
     const bool resolutionChanged =
-        nr.width != width || nr.height != height || nr.workWidth != workWidth || nr.workHeight != workHeight;
+        nr.width != width || nr.height != height || nr.workWidth != workWidth || nr.workHeight != workHeight ||
+        nr.laterWorkWidth != laterWorkWidth || nr.laterWorkHeight != laterWorkHeight;
     const bool placementChanged = nr.width != 0 && (nr.beforeUpscale != frame.BeforeUpscale ||
                                                     nr.rayReconstruction != frame.RayReconstruction);
 
@@ -72,11 +78,13 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
 
     if (nr.output == nullptr)
     {
-        nr.output = CreateScratch(device, desc.Format, workWidth, workHeight);
+        nr.output = CreateScratch(device, desc.Format, passWidth, passHeight);
         nr.colorCopy = CreateScratch(device, desc.Format, width, height);
         nr.hdrCopy = CreateScratch(device, desc.Format, width, height);
         nr.workWidth = workWidth;
         nr.workHeight = workHeight;
+        nr.laterWorkWidth = laterWorkWidth;
+        nr.laterWorkHeight = laterWorkHeight;
         nr.width = width;
         nr.height = height;
         nr.beforeUpscale = frame.BeforeUpscale;
@@ -104,8 +112,8 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
     }
     else if (nr.passScratch == nullptr && !nr.passScratchFailed)
     {
-        nr.passScratch = CreateScratch(device, desc.Format, workWidth, workHeight);
-        nr.passClamp = CreateScratch(device, desc.Format, workWidth, workHeight);
+        nr.passScratch = CreateScratch(device, desc.Format, passWidth, passHeight);
+        nr.passClamp = CreateScratch(device, desc.Format, passWidth, passHeight);
         nr.passScratchFailed = nr.passScratch == nullptr || nr.passClamp == nullptr;
         if (nr.passScratchFailed)
         {
@@ -176,7 +184,10 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
         if (nr.passCreateFailed[pass])
             break;
         bool ready = false;
-        const auto prepared = nr.models[pass].Prepare(cmdList, device, workWidth, workHeight, ModelSettings(cfg, pass),
+        // Pass 0 runs at the primary working size; refinement passes run at the later-pass size.
+        const auto passResWidth = pass == 0 ? workWidth : laterWorkWidth;
+        const auto passResHeight = pass == 0 ? workHeight : laterWorkHeight;
+        const auto prepared = nr.models[pass].Prepare(cmdList, device, passResWidth, passResHeight, ModelSettings(cfg, pass),
                                                       frame.SubmissionEpoch, &ready);
         if (prepared != NVSDK_NGX_Result_Success)
         {
@@ -194,7 +205,7 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
                 }
             }
             LOG_ERROR("DLSS-NR driver creation for pass {} failed: 0x{:X} ({}) [resolution: {}x{}, BeforeUpscale: {}]",
-                      pass + 1, prepared, NgxResultName(prepared), workWidth, workHeight,
+                      pass + 1, prepared, NgxResultName(prepared), passResWidth, passResHeight,
                       frame.BeforeUpscale ? "true" : "false");
                 return false;
         }

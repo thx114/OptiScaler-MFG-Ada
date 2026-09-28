@@ -15,6 +15,9 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 
+#include <atomic>
+#include <chrono>
+
 #pragma intrinsic(_ReturnAddress)
 
 static int scCount = 0;
@@ -305,27 +308,46 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (!_InitInteropObjects())
         return DXGI_ERROR_DEVICE_REMOVED;
 
+    // Bridge step timing: identify which interop step eats the ~64ms real-frame budget.
+    // Sampled every 300 frames to avoid log spam.
+    static std::atomic<uint64_t> sBridgeSamples{0};
+    const bool doTiming = (sBridgeSamples.fetch_add(1) % 300 == 0);
+    auto tNow = [] { return std::chrono::steady_clock::now(); };
+    auto tStart = doTiming ? tNow() : std::chrono::steady_clock::time_point{};
+    auto tCopyShared = tStart, tWaitDx11 = tStart, tCopyFG = tStart, tWaitInterop = tStart, tNr = tStart, tPrePresent = tStart;
+
     auto dx11Index = _GetDx11BackBufferIndexForPresent();
 
     if (!_RequestSharedBackBuffer(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
 
+    if (doTiming) tCopyShared = tNow();
     if (!_CopyDx11BackBufferToShared(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
-
+    if (doTiming) tWaitDx11 = tNow();
     if (!_WaitDx11ThenDx12())
         return DXGI_ERROR_DEVICE_REMOVED;
-
+    if (doTiming) tCopyFG = tNow();
     if (!_CopyDx11SharedToDx12FGBackBuffer(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
-
+    if (doTiming) tWaitInterop = tNow();
     if (!_WaitForInteropCopyOnPresentQueue())
         return DXGI_ERROR_DEVICE_REMOVED;
-
-    // The bridge has already copied the final DX11 image to this DX12 backbuffer.
-    // Run on the presenting queue after its copy wait, including when FG is paused.
-    // Bridge entry: the current backbuffer is the game's real frame; FG gating must not cancel it.
-    DlssNr::ApplyToFinishedPictureBridge(_fgSwapChain, _fg->GetCommandQueue());
+    // Thin bridge (rewrite): the D3D12 _fgSwapChain owns the game's visible window; the real D3D11
+    // swapchain lives on a hidden window, so every frame must be copied through — presenting _real
+    // directly shows a black window. Frame generation stays native (game DLSSG / driver MFG); the
+    // bridge does the minimum: one interop copy pair, FinishedPicture NR in place when an NR owner
+    // exists (profile flags stay true with no owner — gate on the real owner), overlay, present.
+    // The presenting queue falls back to the interop DIRECT queue when the OptiScaler FG feature
+    // is not active, so NR works with OptiScaler FG fully off.
+    // NR is skipped while the game window is unfocused: the frame is not visible anyway, the model
+    // would only burn GPU, and churning NR/FG state while occluded desyncs the picture on return
+    // (the alt-tab flicker). Driver-level MFG is outside our control; this covers what we own.
+    const bool gameFocused = GetForegroundWindow() == _handle;
+    if (gameFocused && DlssNr::HasActiveFinishedPictureOwner())
+        DlssNr::ApplyToFinishedPictureBridge(_fgSwapChain,
+                                             _fg != nullptr ? _fg->GetCommandQueue() : _dx12CommandQueue);
+    if (doTiming) tNr = tNow();
 
     const bool fgHookedPresenter =
         State::Instance().currentFGSwapchain == _fgSwapChain && !FGHooks::IsDx12InteropPresentSC(_fgSwapChain);
@@ -354,7 +376,25 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             LOG_WARN("hidden real DX11 Present failed: {:X}", (UINT) realPresentResult);
     }
 
+    if (doTiming) tPrePresent = tNow();
     auto result = _fgSwapChain->Present(SyncInterval, Flags);
+    if (doTiming)
+    {
+        auto tEnd = tNow();
+        auto ms = [](auto a, auto b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        double dCopyShared = ms(tStart, tCopyShared);
+        double dWaitDx11 = ms(tCopyShared, tWaitDx11);
+        double dCopyFG = ms(tWaitDx11, tCopyFG);
+        double dWaitInterop = ms(tCopyFG, tWaitInterop);
+        double dNr = ms(tWaitInterop, tNr);
+        double dRealPresent = ms(tNr, tPrePresent);
+        double dFgPresent = ms(tPrePresent, tEnd);
+        double dTotal = ms(tStart, tEnd);
+        LOG_INFO("bridge breakdown: copyShared {:.2f} waitDx11 {:.2f} copyFG {:.2f} waitInterop {:.2f} NR {:.2f} realPres {:.2f} fgPres {:.2f} TOTAL {:.2f}",
+                 dCopyShared, dWaitDx11, dCopyFG, dWaitInterop, dNr, dRealPresent, dFgPresent, dTotal);
+    }
 
     if (SUCCEEDED(result))
         _AdvanceFakeBackBufferIndex();
@@ -426,7 +466,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
 
-    if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
+    if (SUCCEEDED(realResult))
     {
         _RefreshCachedSwapchainDesc();
 
@@ -447,6 +487,19 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
             State::Instance().lastMipBias = 100.0f;
             State::Instance().lastMipBiasMax = -100.0f;
         }
+    }
+
+    // FG swapchain resize can fail (e.g. Genshin resizes with BufferCount=1 right after
+    // CreateSwapChain, FFX wrapper returns E_INVALIDARG) while the real DX11 swapchain resized
+    // fine. Don't propagate the FG failure to the game — mark FG for rebuild on the next frame
+    // and return the real result so the game keeps rendering.
+    if (SUCCEEDED(realResult) && FAILED(fgResult))
+    {
+        LOG_WARN("Dx11wDx12SC ResizeBuffers: real OK but FG failed ({:X}); marking FG changed and returning real result",
+                 (UINT) fgResult);
+        State::Instance().fgChanged = true;
+        State::Instance().scChanged = true;
+        return realResult;
     }
 
     return FAILED(realResult) ? realResult : fgResult;
@@ -1118,13 +1171,15 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
 
 bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()
 {
-    if (_fg == nullptr || _copyFence == nullptr)
+    ID3D12CommandQueue* presentQueue = _fg != nullptr ? _fg->GetCommandQueue() : _dx12CommandQueue;
+
+    if (presentQueue == nullptr || _copyFence == nullptr)
         return false;
 
     if (_lastInteropCopyFenceValue == 0)
         return true;
 
-    auto result = _fg->GetCommandQueue()->Wait(_copyFence, _lastInteropCopyFenceValue);
+    auto result = presentQueue->Wait(_copyFence, _lastInteropCopyFenceValue);
     if (FAILED(result))
     {
         LOG_ERROR("present queue Wait on interop copy fence failed: {:X}", (UINT) result);

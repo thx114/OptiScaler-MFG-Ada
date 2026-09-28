@@ -14,6 +14,7 @@
 #include <Localization.h>
 
 #include <dlssnr/DlssNr.h>
+#include <dlssnr/DlssNr_MenuSections.h>
 
 #include "input/input_system.h"
 
@@ -1539,6 +1540,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
 
                 _showMipmapCalcWindow = false;
                 _showHudlessWindow = false;
+                _showNrCenterWindow = false;
             }
 
             io.MouseDrawCursor = _isVisible;
@@ -2332,7 +2334,8 @@ void MenuCommon::RenderMainMenuHeaderMessages(RenderMenuContext& ctx)
     auto& currentVersionText = ctx.currentVersionText;
     auto& primaryGpu = *ctx.primaryGpu;
 
-    if (!_showMipmapCalcWindow && !_showHudlessWindow && !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow))
+    if (!_showMipmapCalcWindow && !_showHudlessWindow && !_showNrCenterWindow &&
+        !ImGui::IsWindowFocused(ImGuiFocusedFlags_AnyWindow))
         ImGui::SetWindowFocus();
 
     if (config->MenuScale.has_value())
@@ -3131,38 +3134,12 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     }
 }
 
-void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
+void MenuCommon::RenderAdaMfgUnlock(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
     auto config = ctx.config;
     auto& primaryGpu = *ctx.primaryGpu;
-    bool external = config->ExternalFrameGeneration.value_or_default();
     const bool ampereActive = config->FGDLSSGAmpereMfgUnlock.value_or_default();
-    const bool onLinux = state.isRunningOnLinux || primaryGpu.usesVkd3dProton;
-    const bool isNvidia = primaryGpu.vendorId == VendorId::Nvidia;
-    const int configuredFrames = config->FGDLSSGAmpereMfgMaxFrames.value_or_default();
-    const std::string fallbackSetting = config->FGDLSSGAmpereMfgLinuxFsrFallback.value_or("auto");
-    const bool dynamicMfg = config->FGDLSSGOverrideForceDMFG.value_or_default() || config->FGDLSSGForceDMFG.value_or_default();
-    const bool ampereFallbackToFsrFg = AmpereMfgLoader::ShouldFallbackToFsrFg(configuredFrames, onLinux, ampereActive, fallbackSetting, dynamicMfg);
-
-    if (ampereActive)
-    {
-        external = true;
-        ImGui::BeginDisabled();
-        ImGui::Checkbox(I18n::Tr("External frame generation / MFG unlocker"), &external);
-        ImGui::EndDisabled();
-        ShowHelpMarker(I18n::Tr("Automatically locked to enabled because the Ampere (SM86) MFG unlocker is active.\n""To disable External FG, disable Ampere SM86 MFG below first."));
-    }
-    else
-    {
-        if (ImGui::Checkbox(I18n::Tr("External frame generation / MFG unlocker"), &external))
-            config->ExternalFrameGeneration = external;
-        ShowHelpMarker(I18n::Tr("Leaves Streamline, Reflex and FG control to the game/external mod.""\nNR and NGX upscaling remain available. Save Settings and restart.""\nDoes not install an unlocker or enable FG in unsupported games."));
-    }
-    if (external != state.externalFrameGeneration && !ampereFallbackToFsrFg)
-        ImGui::TextWrapped(I18n::Tr("Save Settings and restart to change frame-generation ownership."));
-
-    auto& menuResScale = ctx.menuResScale;
 
 #if defined(OPTISCALER_RTX40_MFG)
     const bool adaEnabledForSession = MfgUnlock::EnabledForSession();
@@ -3224,6 +3201,40 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
             ImGui::TextWrapped(I18n::Tr("DLSSG %s: unlock unavailable for this runtime."), status.SnippetVersion.c_str());
     }
 #endif
+}
+
+void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto config = ctx.config;
+    auto& primaryGpu = *ctx.primaryGpu;
+    bool external = config->ExternalFrameGeneration.value_or_default();
+    const bool ampereActive = config->FGDLSSGAmpereMfgUnlock.value_or_default();
+    const bool onLinux = state.isRunningOnLinux || primaryGpu.usesVkd3dProton;
+    const bool isNvidia = primaryGpu.vendorId == VendorId::Nvidia;
+    const int configuredFrames = config->FGDLSSGAmpereMfgMaxFrames.value_or_default();
+    const std::string fallbackSetting = config->FGDLSSGAmpereMfgLinuxFsrFallback.value_or("auto");
+    const bool dynamicMfg = config->FGDLSSGOverrideForceDMFG.value_or_default() || config->FGDLSSGForceDMFG.value_or_default();
+    const bool ampereFallbackToFsrFg = AmpereMfgLoader::ShouldFallbackToFsrFg(configuredFrames, onLinux, ampereActive, fallbackSetting, dynamicMfg);
+
+    if (ampereActive)
+    {
+        external = true;
+        ImGui::BeginDisabled();
+        ImGui::Checkbox(I18n::Tr("External frame generation / MFG unlocker"), &external);
+        ImGui::EndDisabled();
+        ShowHelpMarker(I18n::Tr("Automatically locked to enabled because the Ampere (SM86) MFG unlocker is active.\n""To disable External FG, disable Ampere SM86 MFG below first."));
+    }
+    else
+    {
+        if (ImGui::Checkbox(I18n::Tr("External frame generation / MFG unlocker"), &external))
+            config->ExternalFrameGeneration = external;
+        ShowHelpMarker(I18n::Tr("Leaves Streamline, Reflex and FG control to the game/external mod.""\nNR and NGX upscaling remain available. Save Settings and restart.""\nDoes not install an unlocker or enable FG in unsupported games."));
+    }
+    if (external != state.externalFrameGeneration && !ampereFallbackToFsrFg)
+        ImGui::TextWrapped(I18n::Tr("Save Settings and restart to change frame-generation ownership."));
+
+    auto& menuResScale = ctx.menuResScale;
 
     // 鈹€鈹€ Ampere/Turing (SM86/SM75) MFG Unlock 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     if (ImGui::CollapsingHeader(I18n::Tr("RTX 20 / 30 (SM75 / SM86) MFG Unlock")))
@@ -7436,7 +7447,6 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
         // Left column: active upscaler state, frame generation, FSR common, latency and fakenvapi controls.
         RenderActiveUpscalerSettings(ctx);
         RenderFrameGenerationSelection(ctx);
-        RenderFrameGenerationRuntimeSettings(ctx);
         RenderFsrCommonSettings(ctx);
         RenderFramerateSettings(ctx);
 #ifdef LOW_LATENCY_INPUTS
@@ -7449,7 +7459,10 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 
         // Right column: image quality, initialization, advanced options, appearance, overlay and input settings.
         RenderActiveImageSettings(ctx);
-        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
+        if (ImGui::Button(I18n::Tr("NR / Neural Rendering Center"), ImVec2(-FLT_MIN, 0.0f)))
+            _showNrCenterWindow = !_showNrCenterWindow;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(I18n::Tr("Opens the standalone neural-rendering window: NR pipeline, frame generation and MFG unlock in one place."));
         RenderMagnifierSettings(ctx);
         RenderQuirksSettings(ctx);
         RenderAdvancedSettings(ctx);
@@ -7656,6 +7669,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
         _showMipmapCalcWindow = false;
         _showHudlessWindow = false;
+        _showNrCenterWindow = false;
         io.MouseDrawCursor = false;
         io.WantCaptureKeyboard = false;
         io.WantCaptureMouse = false;
@@ -7954,10 +7968,108 @@ void MenuCommon::RenderHudlessResourcesWindow(RenderMenuContext& ctx, ImGuiWindo
 
             if (ImGui::Button(I18n::Tr("Close##4")))
                 _showHudlessWindow = false;
-
-            ImGui::End();
         }
+
+        ImGui::End();
     }
+}
+
+void MenuCommon::RenderNrCenterWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags)
+{
+    if (!_showNrCenterWindow)
+        return;
+
+    auto config = ctx.config;
+    auto& io = ctx.io;
+    auto& menuResScale = ctx.menuResScale;
+
+    // Unlike the auto-resized main menu, this window is user-resizable.
+    ImGuiWindowFlags centerFlags = flags & ~ImGuiWindowFlags_AlwaysAutoResize;
+
+    const float width = std::min(io.DisplaySize.x * 0.72f, 980.0f * menuResScale);
+    const float height = std::min(io.DisplaySize.y * 0.78f, 640.0f * menuResScale);
+    ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x - width) * 0.5f, (io.DisplaySize.y - height) * 0.5f),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_FirstUseEver);
+
+    bool open = _showNrCenterWindow;
+    if (ImGui::Begin(I18n::Tr("NR / Neural Rendering Center"), &open, centerFlags))
+    {
+        if (!open)
+            _showNrCenterWindow = false;
+
+        DlssNr::RenderCenterToggles(config, menuResScale);
+        ImGui::Separator();
+
+        // Left rail: narrow vertical node list (~10 chars per node).
+        const float railWidth = ImGui::GetFontSize() * 9.0f;
+        ImGui::BeginChild("nr_center_rail", ImVec2(railWidth, 0.0f), ImGuiChildFlags_Borders);
+        struct NodeEntry
+        {
+            DlssNr::CenterNode node;
+            const char* label;
+        };
+        // Pipeline order top-to-bottom: input -> upscale -> NR -> frame gen -> status.
+        const NodeEntry nodes[] = {
+            { DlssNr::CenterNode::NrInput, I18n::Tr("NR Input") },
+            { DlssNr::CenterNode::Upscale, I18n::Tr("Upscale/Ada MFG") },
+            { DlssNr::CenterNode::NrModel, I18n::Tr("NR Model") },
+            { DlssNr::CenterNode::NrBlend, I18n::Tr("NR Blend") },
+            { DlssNr::CenterNode::NrPlacement, I18n::Tr("NR Place") },
+            { DlssNr::CenterNode::FrameGen, I18n::Tr("Frame Gen") },
+            { DlssNr::CenterNode::Status, I18n::Tr("Status") },
+        };
+        auto& selected = DlssNr::CenterSelected();
+        for (int i = 0; i < (int) std::size(nodes); ++i)
+        {
+            const auto& entry = nodes[i];
+            const bool chosen = selected == entry.node;
+            if (chosen)
+                ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive));
+            if (ImGui::Button(entry.label, ImVec2(-FLT_MIN, 0.0f)))
+                selected = entry.node;
+            if (chosen)
+                ImGui::PopStyleColor();
+
+            // Down arrow connecting to the next pipeline stage.
+            if (i + 1 < (int) std::size(nodes))
+            {
+                const float arrowY = ImGui::GetCursorScreenPos().y + ImGui::GetStyle().ItemSpacing.y * 0.5f;
+                const float cx = ImGui::GetWindowWidth() * 0.5f;
+                auto* draw = ImGui::GetWindowDrawList();
+                const ImU32 col = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+                draw->AddTriangleFilled(ImVec2(cx, arrowY + 3.0f), ImVec2(cx - 4.0f, arrowY - 3.0f),
+                                        ImVec2(cx + 4.0f, arrowY - 3.0f), col);
+                ImGui::Dummy(ImVec2(0.0f, ImGui::GetStyle().ItemSpacing.y));
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::SameLine();
+
+        // Right side: configuration of the selected node.
+        ImGui::BeginChild("nr_center_panel", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+        switch (selected)
+        {
+        case DlssNr::CenterNode::Upscale:
+            ImGui::SeparatorText(I18n::Tr("Upscaler / RTX 40 MFG"));
+            RenderAdaMfgUnlock(ctx);
+            break;
+        case DlssNr::CenterNode::FrameGen:
+            ImGui::SeparatorText(I18n::Tr("Frame Generation"));
+            RenderFrameGenerationRuntimeSettings(ctx);
+            break;
+        default:
+            ImGui::SeparatorText(nodes[(int) selected].label);
+            DlssNr::RenderCenterSection(config, menuResScale, selected);
+            break;
+        }
+        ImGui::EndChild();
+
+        ImGui::End();
+    }
+    else if (!open)
+        _showNrCenterWindow = false;
 }
 
 void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
@@ -8057,6 +8169,7 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     // Detached utility windows owned by the main menu.
     RenderMipmapBiasWindow(ctx, flags);
     RenderHudlessResourcesWindow(ctx, flags);
+    RenderNrCenterWindow(ctx, flags);
 
     if (config->UseHQFont.value_or_default())
         ImGui::PopFontSize();
@@ -8371,6 +8484,7 @@ void MenuCommon::HideMenu()
 
     _showMipmapCalcWindow = false;
     _showHudlessWindow = false;
+    _showNrCenterWindow = false;
 
     io.MouseDrawCursor = _isVisible;
     io.WantCaptureKeyboard = _isVisible;

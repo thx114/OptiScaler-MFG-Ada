@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "DlssNr_Status.h"
 #include <d3d12.h>
@@ -10,7 +10,7 @@
 namespace DlssNr
 {
 inline constexpr unsigned int MaxPassCount = 30;
-inline constexpr unsigned int DefaultMaxPassCount = 3;
+inline constexpr unsigned int DefaultMaxPassCount = 5;
 
 // Public callbacks route through registered upscaler owners. They do not own GPU state.
 std::string FinishedPictureStatus();
@@ -20,6 +20,10 @@ void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12Comma
 void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
 // Dx11wDx12SC::Present hand-off, before the FG swapchain's own Present.
 void ApplyToFinishedPictureBridge(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
+// True when a DLSS-NR owner is actually instantiated and active (not just configured).
+// Used by Dx11wDx12SC::Present's fast-path: DlssNrEnabled/FinishedPicture are profile-static
+// flags that stay true even when no NR owner exists, so they cannot gate the bridge skip.
+bool HasActiveFinishedPictureOwner();
 // True when the bridge already applied NR for the frame currently in the FG present hook.
 bool ConsumeBridgeAppliedEpoch();
 void ApplyToStreamlinePicture(IDXGISwapChain* swapchain, ID3D12Resource* picture, ID3D12CommandQueue* queue);

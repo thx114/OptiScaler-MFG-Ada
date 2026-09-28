@@ -88,6 +88,7 @@ class MenuCommon
     // mipmap calculations
     inline static bool _showMipmapCalcWindow = false;
     inline static bool _showHudlessWindow = false;
+    inline static bool _showNrCenterWindow = false;
     inline static float _mipBias = 0.0f;
     inline static float _mipBiasCalculated = 0.0f;
     inline static uint32_t _mipmapUpscalerQuality = 0;
@@ -181,6 +182,8 @@ class MenuCommon
     static void RenderMainMenuBottomBar(RenderMenuContext& ctx);
     static void RenderMipmapBiasWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);
     static void RenderHudlessResourcesWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);
+    static void RenderNrCenterWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags);
+    static void RenderAdaMfgUnlock(RenderMenuContext& ctx);
 
     static void UpdateManualInput(HWND targetHwnd);
 

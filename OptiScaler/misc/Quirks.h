@@ -162,8 +162,8 @@ static const QuirkEntry quirkTable[] = {
     // shim（feat/restore-shim 分支），桥导出 6 个 ffxFsr2* 桩 + Detours hook
     // GetProcAddress，让 OptiScaler 的 exe 扫描命中桥的桩 → DLSS detour 链。
     // UseFsr2Dx11Inputs 让 dllmain 走 HookFSR2Dx11ExeInputs 而非默认 DX12 路径。
-    QUIRK_ENTRY("YuanShen.exe", GameQuirk::UseFsr2Dx11Inputs),
-    QUIRK_ENTRY("GenshinImpact.exe", GameQuirk::UseFsr2Dx11Inputs),
+    QUIRK_ENTRY("yuanshen.exe", GameQuirk::UseFsr2Dx11Inputs),
+    QUIRK_ENTRY("genshinimpact.exe", GameQuirk::UseFsr2Dx11Inputs),
 
     // NINJA GAIDEN 4
     // No spoof needed for DLSS inputs, Hudfix incompatible

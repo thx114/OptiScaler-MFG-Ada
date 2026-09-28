@@ -243,7 +243,8 @@ void DlssNr_Dx12::Retire(std::unique_ptr<DlssNr_Dx12> owner)
 {
     if (!owner) return;
     std::lock_guard lock(nrOwnersMutex);
-    if (activeNrOwner == owner.get()) activeNrOwner = nullptr;
+    const bool wasActive = (activeNrOwner == owner.get());
+    if (wasActive) activeNrOwner = nullptr;
     DlssNr::ClearStatus(owner.get());
     {
         std::lock_guard stateLock(owner->_state->mutex);
@@ -254,7 +255,7 @@ void DlssNr_Dx12::Retire(std::unique_ptr<DlssNr_Dx12> owner)
             if (slot.commands) owner->_state->FinishedPictureResetCommandList(slot.commands.Get());
     }
     RetiredNrOwners().push_back(std::move(owner));
-    LOG_INFO("DLSS-NR: retaining retired GPU owner until recordings finish; {} waiting", RetiredNrOwners().size());
+    LOG_INFO("DLSS-NR: retire owner (wasActive={}), retaining until recordings finish; {} waiting", wasActive, RetiredNrOwners().size());
 }
 
 bool DlssNr_Dx12::ReadyToDestroy()
@@ -462,6 +463,7 @@ bool DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmd, ID3D12Resource* colou
 {
     std::lock_guard ownersLock(nrOwnersMutex);
     ActivateNrOwner(this);
+    LOG_DEBUG("NR Dispatch: activated owner, nrOwners.size={}", nrOwners.size());
     std::lock_guard stateLock(_state->mutex);
     _state->ConsumeControls();
     struct Publish
@@ -773,6 +775,8 @@ void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue
     std::lock_guard lock(nrOwnersMutex);
     if (activeNrOwner)
         activeNrOwner->ApplyFinished(picture.Get(), queue, space);
+    else if (swapchain && queue && config.DlssNrEnabled.value_or_default() && config.DlssNrFinishedPicture.value_or_default())
+        LOG_DEBUG("NR bridge: activeNrOwner is nullptr, skipping ApplyFinished (nrOwners.size={}, externalFgActive={})", nrOwners.size(), externalFgActive);
 }
 // Dx11wDx12SC::Present calls this before _fgSwapChain->Present: the current backbuffer is
 // the game's real frame at that moment, so finished-picture NR is valid even with FG active.
@@ -822,6 +826,11 @@ bool ConsumeBridgeAppliedEpoch()
 {
     UINT64 epoch = bridgeAppliedEpoch.load();
     return epoch != 0 && ::State::Instance().frameCount <= epoch + 1;
+}
+bool HasActiveFinishedPictureOwner()
+{
+    std::lock_guard lock(nrOwnersMutex);
+    return activeNrOwner != nullptr;
 }
 void ApplyToStreamlinePicture(IDXGISwapChain* swapchain, ID3D12Resource* picture, ID3D12CommandQueue* queue)
 {

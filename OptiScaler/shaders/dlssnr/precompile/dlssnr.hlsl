@@ -35,6 +35,7 @@ cbuffer Params : register(b0)
     float gSkinColour;
     float gEnvironmentDetail;
     float gEnvironmentColour;
+    float gClampMerge;     // resampled pass chains: blend this much of the encoded game frame back in
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -551,8 +552,30 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     if (gMode == 8)
     {
         // Already encoded: restore the input range without applying the tone curve again.
-        float4 raw = gSource.Load(int3(id.xy, 0));
-        gTarget[id.xy] = float4(saturate(SanitizeFinite3(raw.rgb, 0.5)), raw.a);
+        // A chain whose passes run at different working resolutions resamples the previous answer
+        // onto this pass's grid, and can blend the encoded game frame back in so detail a cheap
+        // low-resolution first pass lost survives into the refinement pass.
+        uint srcW = 0, srcH = 0;
+        gSource.GetDimensions(srcW, srcH);
+        float4 raw;
+        float2 uv = 0.0;
+        const bool resample = srcW != gWidth || srcH != gHeight;
+        if (resample)
+        {
+            uv = (id.xy + 0.5) / float2(gWidth, gHeight);
+            raw = gSource.SampleLevel(gLinear, uv, 0);
+        }
+        else
+        {
+            raw = gSource.Load(int3(id.xy, 0));
+        }
+        float3 restored = saturate(SanitizeFinite3(raw.rgb, 0.5));
+        if (resample && gClampMerge > 0.0)
+        {
+            const float3 game = gOriginal.SampleLevel(gLinear, uv, 0).rgb;
+            restored = saturate(lerp(restored, game, saturate(gClampMerge)));
+        }
+        gTarget[id.xy] = float4(restored, raw.a);
         return;
     }
 

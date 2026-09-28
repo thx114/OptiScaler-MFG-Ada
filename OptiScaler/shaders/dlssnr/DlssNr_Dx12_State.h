@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "DlssNr_Dx12_ModelState.h"
 #include <dlssnr/DlssNr_Placement.h>
 #include <dlssnr/DlssNr_FinishedReady.h>
@@ -448,7 +448,7 @@ struct DlssNr_Dx12::State
     DlssNr::Proxy::Settings ModelSettings(const Config& cfg, unsigned int pass);
     bool PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device,
                           const DlssNrFrameInfo& frame, const D3D12_RESOURCE_DESC& desc,
-                          DlssNr::ColorExtent native, DlssNr::ColorExtent work,
+                          DlssNr::ColorExtent native, DlssNr::ColorExtent work, DlssNr::ColorExtent laterWork,
                           float workScale, unsigned int requestedPasses);
     struct EncodeContext
     {

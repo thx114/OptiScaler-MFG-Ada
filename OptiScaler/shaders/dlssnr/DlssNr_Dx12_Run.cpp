@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "DlssNr_Dx12_State.h"
 
 auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth, ID3D12Resource* motion,
@@ -149,9 +149,17 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     workScale = workScale < 0.25f ? 0.25f : (workScale > 2.0f ? 2.0f : workScale);
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
+
+    // Refinement passes (pass 1+) run at their own scale; unset means they follow the primary scale.
+    float laterScale = cfg.DlssNrLaterPassScale.has_value() ? cfg.DlssNrLaterPassScale.value() : workScale;
+    if (!std::isfinite(laterScale))
+        laterScale = workScale;
+    laterScale = laterScale < 0.25f ? 0.25f : (laterScale > 2.0f ? 2.0f : laterScale);
+    const auto laterWorkWidth = (unsigned int) (width * laterScale + 0.5f);
+    const auto laterWorkHeight = (unsigned int) (height * laterScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
     if (!PrepareRunModels(cmdList, device, frame, desc, { width, height }, { workWidth, workHeight },
-                          workScale, requestedPasses))
+                          { laterWorkWidth, laterWorkHeight }, workScale, requestedPasses))
     {
         device->Release();
         return;
@@ -266,9 +274,9 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         return;
     }
 
-    // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
-    const float mvToWorkX = width != 0 ? (float) workWidth / (float) width : 1.0f;
-    const float mvToWorkY = height != 0 ? (float) workHeight / (float) height : 1.0f;
+    // The vectors were scaled to full-frame pixels; each pass reprojects at its own working size.
+    const auto mvToWorkX = [&](unsigned int passW) { return width != 0 ? (float) passW / (float) width : 1.0f; };
+    const auto mvToWorkY = [&](unsigned int passH) { return height != 0 ? (float) passH / (float) height : 1.0f; };
 
     if (ngxTime != nullptr)
         ngxTime->Start(cmdList);
@@ -305,7 +313,6 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     bool scratchReadable = false;
     bool clampReadable = false;
     bool clampFailed = false;
-    uint32_t clampSlots[2] = { UINT32_MAX, UINT32_MAX };
 
     const auto MakeModelReadable = [&](ID3D12Resource* resource)
     {
@@ -339,12 +346,15 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
     for (unsigned int pass = 0; pass < effectivePasses && result == NVSDK_NGX_Result_Success; ++pass)
     {
+        // Pass 0 runs at the primary working size; refinement passes run at the later-pass size.
+        const auto passW = pass == 0 ? workWidth : laterWorkWidth;
+        const auto passH = pass == 0 ? workHeight : laterWorkHeight;
         MakeModelWritable(passOutput);
         bool evaluated = false;
         result = static_cast<int>(nr.models[pass].Run(
-            cmdList, device, passInput, depthIn, motionIn, passOutput, workWidth, workHeight, guideWidth,
+            cmdList, device, passInput, depthIn, motionIn, passOutput, passW, passH, guideWidth,
             guideHeight, motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY,
-            nr.guideDepthInverted, nr.reset, nr.guideMvScaleX * mvToWorkX, nr.guideMvScaleY * mvToWorkY,
+            nr.guideDepthInverted, nr.reset, nr.guideMvScaleX * mvToWorkX(passW), nr.guideMvScaleY * mvToWorkY(passH),
             ModelSettings(cfg, pass), frame.SubmissionEpoch, &evaluated));
         modelRunning = evaluated && result == NVSDK_NGX_Result_Success;
         if (!evaluated)
@@ -358,13 +368,20 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
         if (pass + 1 < effectivePasses)
         {
+            // The clamp between passes targets the next pass's resolution. When that differs from
+            // this pass's output the shader resamples; ClampMerge blends the encoded game frame back
+            // in so detail the cheap first pass lost survives into the refinement pass.
+            // The next pass is always a refinement pass, so it runs at the later-pass size.
+            const auto nextW = laterWorkWidth;
+            const auto nextH = laterWorkHeight;
             MakeModelWritable(nr.passClamp);
             DlssNrConstants clamp {};
             clamp.Mode = DlssNrMode_ClampProxy;
-            clamp.Width = workWidth;
-            clamp.Height = workHeight;
-            if (!shader.DispatchPass(cmdList, clamp, finalAnswer, nullptr, nullptr, nullptr, nullptr, nr.passClamp,
-                                     nullptr, &clampSlots[pass % 2]))
+            clamp.Width = nextW;
+            clamp.Height = nextH;
+            clamp.ClampMerge = std::clamp(cfg.DlssNrPassMerge.value_or_default(), 0.0f, 1.0f);
+            if (!shader.DispatchPass(cmdList, clamp, finalAnswer, nullptr, nr.colorCopy, nullptr, nullptr, nr.passClamp,
+                                     nullptr, nullptr))
             {
                 // Keep this frame's last valid answer; later histories skipped a frame.
                 clampFailed = true;

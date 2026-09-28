@@ -2,6 +2,7 @@
 #include "IFeature_Dx11wDx12.h"
 #include "NgxOptionalDx12Inputs.h"
 
+#include <atomic>
 
 #include <Config.h>
 
@@ -433,8 +434,81 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         SetOptionalDx12Inputs(InParameters, dx11Exp.Dx12Resource, dx11Reactive.Dx12Resource, AutoExposure(),
                               Config::Instance()->DisableReactiveMask.value_or(false));
 
-        LOG_DEBUG("Dispatch!!");
-        dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters, Dx12CommandQueue, _frameCount);
+        // DLAA / 1:1 ratio fast path: when the DLSS upscaler is asked to run at render-size == target-size
+        // (DLAA, or a quality override that collapsed to 1:1), the NGX D3D12_EvaluateFeature call still
+        // runs the full model internally even though no scaling is needed. On the Dx11wDx12 bridge that
+        // NGX evaluate is the dominant per-frame cost (~15-25ms on RTX4060), and with only a 2-deep
+        // allocator ring the next frame's ProcessDx11Textures INFINITE-waits on it — yielding ~52ms/19fps
+        // in Genshin/Star Rail DLAA. FSR w/Dx12 doesn't hit this because its evaluate is a cheap shader
+        // dispatch. Skip NGX entirely and copy color -> output on the same command list; the downstream
+        // Close/Execute/Signal/CopyBackOutput path is unchanged, so the D3D11 game still receives its
+        // upscaled frame. Only applies to DLSS (NGX) features with sharpening off (NGX would otherwise
+        // apply sharpening inside evaluate); FSR/XeSS already cheap and their evaluate may do more than
+        // a copy at 1:1 (sharpness/reactive), so leave those alone.
+        const bool dlssPassthrough1to1 =
+            dx12Feature->GetUpscalerType() == Upscaler::DLSS &&
+            !dx12Feature->SharpenEnabled() &&
+            dx12Feature->RenderWidth() != 0 && dx12Feature->TargetWidth() != 0 &&
+            dx12Feature->RenderWidth() == dx12Feature->TargetWidth() &&
+            dx12Feature->RenderHeight() == dx12Feature->TargetHeight();
+
+        static std::atomic_uint64_t ratioDiag { 0 };
+        if (ratioDiag.fetch_add(1, std::memory_order_relaxed) % 300 == 0)
+        {
+            auto ut = dx12Feature->GetUpscalerType();
+            auto rw = dx12Feature->RenderWidth();
+            auto rh = dx12Feature->RenderHeight();
+            auto tw = dx12Feature->TargetWidth();
+            auto th = dx12Feature->TargetHeight();
+            LOG_INFO("ratio diag: passthrough {} type {} sharpen {} render {} {} target {} {}",
+                     (int)dlssPassthrough1to1, (int)ut, (int)dx12Feature->SharpenEnabled(), (int)rw, (int)rh,
+                     (int)tw, (int)th);
+        }
+
+        if (dlssPassthrough1to1)
+        {
+            ID3D12Resource* srcColor = dx11Color.Dx12Resource;
+            ID3D12Resource* dstOutput = dx11Out.Dx12Resource;
+            if (srcColor != nullptr && dstOutput != nullptr)
+            {
+                // Shared resources start in COMMON; transition for an explicit copy.
+                auto barrier = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
+                {
+                    if (res == nullptr || before == after)
+                        return;
+                    D3D12_RESOURCE_BARRIER b {};
+                    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    b.Transition.pResource = res;
+                    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    b.Transition.StateBefore = before;
+                    b.Transition.StateAfter = after;
+                    cmdList->ResourceBarrier(1, &b);
+                };
+
+                barrier(srcColor, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                barrier(dstOutput, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+                cmdList->CopyResource(dstOutput, srcColor);
+                barrier(dstOutput, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+                barrier(srcColor, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+
+                dx12EvalResult = true;
+
+                static std::atomic_uint64_t passthroughLogCount { 0 };
+                if (passthroughLogCount.fetch_add(1, std::memory_order_relaxed) < 4)
+                    LOG_INFO("Dx11wDx12 DLSS 1:1 passthrough: skipped NGX evaluate, copied color->output ({}x{})",
+                             dx12Feature->RenderWidth(), dx12Feature->RenderHeight());
+            }
+            else
+            {
+                LOG_WARN("Dx11wDx12 DLSS 1:1 passthrough: missing color/output D3D12 resource, falling back to NGX evaluate");
+                dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters, Dx12CommandQueue, _frameCount);
+            }
+        }
+        else
+        {
+            LOG_DEBUG("Dispatch!!");
+            dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters, Dx12CommandQueue, _frameCount);
+        }
 
         // DLSS 5 Neural Rendering rides the bridge: at this moment the block carries the D3D12 copies
         // of every input, the list is still recording, and the model's edit lands on the D3D12 output

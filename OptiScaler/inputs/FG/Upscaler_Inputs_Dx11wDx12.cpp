@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "Upscaler_Inputs_Dx11wDx12.h"
 
+#include <wrl/client.h>
+
 #include "MathUtils.h"
 
 #include <with_dx12/with_dx12.h>
@@ -284,6 +286,60 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
             setResource.validity = FG_ResourceValidity::ValidNow;
 
             fg->SetResource(&setResource);
+        }
+    }
+
+    // HudlessColor via final-scene handoff (route B for Genshin DX11 FG)。
+    // 原神 DX11 路径下 Dx11wDx12SC 只桥接 backbuffer（含 HUD 合成后画面），
+    // 从不 set HudlessColor → DLSSG 拿不到 pre-HUD color tag → 插值帧 HUD 拖影。
+    // 桥侧 OptiScalerSubmitFinalSceneD3D11 已把 post-scene/pre-UI 的最终 color 帧
+    // 入库到 State::finalSceneSrv（ID3D11ShaderResourceView，owned texture，MiscFlags=0）。
+    // 这里取其 underlying ID3D11Texture2D，经 Dx11WithDx12::CopyTextureFrom11To12
+    // 共享/拷贝到 D3D12（与 Depth/MV 同机制：源非 shared 时建 shared 克隆并拷贝），
+    // 作为 FG_ResourceType::HudlessColor 喂给 DLSSG。
+    if (Config::Instance()->FGEnabled.value_or_default() && !Config::Instance()->FGDisableHudless.value_or_default())
+    {
+        auto& state = State::Instance();
+        ID3D11ShaderResourceView* finalSceneSrv = state.finalSceneSrv;
+        if (finalSceneSrv != nullptr && state.finalSceneWidth != 0)
+        {
+            Microsoft::WRL::ComPtr<ID3D11Resource> sceneResource;
+            finalSceneSrv->GetResource(&sceneResource);
+            if (sceneResource != nullptr)
+            {
+                Microsoft::WRL::ComPtr<ID3D11Texture2D> sceneTexture;
+                if (SUCCEEDED(sceneResource.As(&sceneTexture)) && sceneTexture != nullptr)
+                {
+                    Dx11WithDx12::D3D11_TEXTURE2D_RESOURCE_C shared {};
+                    const bool dontUseNtShared = Config::Instance()->DontUseNTShared.value_or_default();
+                    if (Dx11WithDx12::CopyTextureFrom11To12(sceneTexture.Get(), &shared, true, false, dontUseNtShared) &&
+                        shared.Dx12Resource != nullptr)
+                    {
+                        Dx12Resource setResource {};
+                        setResource.type = FG_ResourceType::HudlessColor;
+                        setResource.cmdList = cmdList;
+                        setResource.resource = shared.Dx12Resource;
+                        setResource.width = state.finalSceneWidth;
+                        setResource.height = state.finalSceneHeight;
+                        setResource.state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                        setResource.validity = FG_ResourceValidity::JustTrackCmdlist;
+                        setResource.frameIndex = fg->GetIndexWillBeDispatched();
+
+                        fg->SetResource(&setResource);
+
+                        static std::atomic_uint64_t hudlessLogCount { 0 };
+                        if (hudlessLogCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                            LOG_INFO("(FG Dx11wDx12) HudlessColor set from finalSceneSrv {}x{}, frame: {}",
+                                     state.finalSceneWidth, state.finalSceneHeight, fg->FrameCount());
+                    }
+                    else
+                    {
+                        static std::atomic_uint64_t failLogCount { 0 };
+                        if (failLogCount.fetch_add(1, std::memory_order_relaxed) < 4)
+                            LOG_WARN("(FG Dx11wDx12) finalSceneSrv CopyTextureFrom11To12 failed, frame: {}", fg->FrameCount());
+                    }
+                }
+            }
         }
     }
 

@@ -15,6 +15,11 @@ class FSRFG_Dx12 : public virtual IFGFeature_Dx12
     ffxContext _fgContext = nullptr;
     FfxApiSurfaceFormat _lastHudlessFormat = FFX_API_SURFACE_FORMAT_UNKNOWN;
     FfxApiSurfaceFormat _usingHudlessFormat = FFX_API_SURFACE_FORMAT_UNKNOWN;
+    // Backbuffer format the FG context was created with (DX12 flip swapchain, always UNORM-family
+    // since PrepareDx12FlipFormat strips the _SRGB view). FFX requires presentColor.format to match
+    // this, but a game rendering to an R8G8B8A8_UNORM_SRGB target hands us presentColor.format = SRGB.
+    // SRGB and UNORM share the same memory layout, so we reconcile them at dispatch time.
+    FfxApiSurfaceFormat _backBufferFormat = FFX_API_SURFACE_FORMAT_UNKNOWN;
     feature_version _version { 0, 0, 0 };
 
     bool _linkedHudlesDesc = false;

@@ -1,8 +1,9 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "DlssNr_MenuSections.h"
 #include <Config.h>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -86,7 +87,7 @@ static bool InheritedProfileCombo(const char* label, CustomOptional<uint32_t, No
 void RenderModel(Config* config, float menuResScale)
 {
     // Keep the UI simple; advanced INI pass settings remain available.
-    constexpr int menuPassLimit = 2;
+    constexpr int menuPassLimit = 5;
     {
         int passes = (int) std::clamp(config->DlssNrPasses.value_or_default(), 1u, (unsigned int) menuPassLimit);
         const auto text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
@@ -96,15 +97,18 @@ void RenderModel(Config* config, float menuResScale)
             return count == 1 ? ImVec4(brightness * 0.35f, brightness * 0.75f, brightness * 0.45f, text.w)
                               : ImVec4(brightness * 0.80f, brightness * 0.35f, brightness * 0.32f, text.w);
         };
+        char passLabel[8];
+        snprintf(passLabel, sizeof(passLabel), "%d", passes);
         ImGui::PushStyleColor(ImGuiCol_Text, passColour(passes));
-        const bool open = ImGui::BeginCombo("##Model passes", passes == 1 ? "1" : "2");
+        const bool open = ImGui::BeginCombo("##Model passes", passLabel);
         ImGui::PopStyleColor();
         if (open)
         {
             for (int count = 1; count <= menuPassLimit; ++count)
             {
                 ImGui::PushStyleColor(ImGuiCol_Text, passColour(count));
-                if (ImGui::Selectable(count == 1 ? "1" : "2", passes == count))
+                snprintf(passLabel, sizeof(passLabel), "%d", count);
+                if (ImGui::Selectable(passLabel, passes == count))
                     config->DlssNrPasses = (uint32_t) count;
                 ImGui::PopStyleColor();
             }
@@ -112,6 +116,14 @@ void RenderModel(Config* config, float menuResScale)
         }
         ImGui::SameLine();
         ImGui::TextUnformatted(I18n::Tr("Model passes"));
+    }
+
+    {
+        float passMerge = config->DlssNrPassMerge.value_or_default();
+        if (ImGui::SliderFloat(I18n::Tr("Pass merge"), &passMerge, 0.0f, 1.0f, "%.2f"))
+            config->DlssNrPassMerge = std::clamp(passMerge, 0.0f, 1.0f);
+        HelpMarker("When passes run at different resolutions, how much of the encoded game frame is "
+                   "blended back in between passes. 0 = previous pass only, 1 = game frame only.");
     }
 
     static const char* styles[] = { "Standard", "Natural", "Cinematic" };
@@ -151,6 +163,59 @@ void RenderModel(Config* config, float menuResScale)
         ImGui::SameLine();
         if (ImGui::SmallButton(I18n::Tr("Reset##mask")))
             config->DlssNrPass2AutoMask = std::optional<bool> {};
+        ImGui::TreePop();
+    }
+
+    // Pass 3 keeps its legacy per-key configuration; passes 4+ draw from the ExtraPasses table
+    // (index 0 is pass 4, index 1 is pass 5).
+    if (config->DlssNrPasses.value_or_default() >= 3 && ImGui::TreeNodeEx("Pass 3", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        InheritedProfileCombo("Style", &config->DlssNrPass3Style, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
+        DeferredSlider("Intensity", &config->DlssNrPass3Intensity, 0.0f, 2.0f,
+                       config->DlssNrIntensity.value_or_default(), "%.2f", true);
+        DeferredSlider("Local structure", &config->DlssNrPass3LocalStructure, 0.0f, 2.0f,
+                       config->DlssNrLocalStructure.value_or_default(), "%.2f", true);
+        DeferredSlider("Local tone", &config->DlssNrPass3LocalTone, 0.0f, 2.0f, 0.0f, "%.2f", true);
+        DeferredSlider("Skin structure", &config->DlssNrPass3SkinStructure, -1.0f, 2.0f,
+                       config->DlssNrSkinStructure.value_or_default(), "%.2f", true);
+        bool mask = config->DlssNrPass3AutoMask.has_value() ? config->DlssNrPass3AutoMask.value()
+                                                            : config->DlssNrAutoMask.value_or_default();
+        if (ImGui::Checkbox(I18n::Tr("Auto skin mask"), &mask))
+            config->DlssNrPass3AutoMask = mask;
+        ImGui::SameLine();
+        if (ImGui::SmallButton(I18n::Tr("Reset##mask")))
+            config->DlssNrPass3AutoMask = std::optional<bool> {};
+        ImGui::TreePop();
+    }
+
+    for (int extra = 0; extra < 2; ++extra)
+    {
+        const int passNumber = 4 + extra;
+        if (config->DlssNrPasses.value_or_default() < (unsigned int) passNumber)
+            continue;
+        char nodeLabel[16];
+        snprintf(nodeLabel, sizeof(nodeLabel), "Pass %d", passNumber);
+        if (!ImGui::TreeNodeEx(nodeLabel, ImGuiTreeNodeFlags_DefaultOpen))
+            continue;
+
+        auto& extraPass = config->DlssNrExtraPasses[extra];
+        InheritedProfileCombo("Style", &extraPass.style, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
+        DeferredSlider("Intensity", &extraPass.intensity, 0.0f, 2.0f,
+                       config->DlssNrIntensity.value_or_default(), "%.2f", true);
+        DeferredSlider("Local structure", &extraPass.structure, 0.0f, 2.0f,
+                       config->DlssNrLocalStructure.value_or_default(), "%.2f", true);
+        DeferredSlider("Local tone", &extraPass.tone, 0.0f, 2.0f, 0.0f, "%.2f", true);
+        DeferredSlider("Skin structure", &extraPass.skin, -1.0f, 2.0f,
+                       config->DlssNrSkinStructure.value_or_default(), "%.2f", true);
+        bool mask = extraPass.autoMask.has_value() ? extraPass.autoMask.value()
+                                                   : config->DlssNrAutoMask.value_or_default();
+        if (ImGui::Checkbox(I18n::Tr("Auto skin mask"), &mask))
+            extraPass.autoMask = mask;
+        ImGui::SameLine();
+        ImGui::PushID(extra);
+        if (ImGui::SmallButton(I18n::Tr("Reset##mask")))
+            extraPass.autoMask = std::optional<bool> {};
+        ImGui::PopID();
         ImGui::TreePop();
     }
 

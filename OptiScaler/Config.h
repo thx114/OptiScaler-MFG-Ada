@@ -395,6 +395,16 @@ class Config
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
     CustomOptional<float> DlssNrWorkingScale { 1.0f };
 
+    // Working scale for model passes after the first (pass 2+). Unset = every pass uses
+    // DlssNrWorkingScale, the classic single-scale behaviour. Setting it below pass 1 (e.g. pass 1
+    // at 25%, later passes at 60%) runs the cheap pass on fewer pixels and the refinement pass on
+    // more, which is a different cost/quality point than either scale alone.
+    CustomOptional<float, NoDefault> DlssNrLaterPassScale;
+
+    // When a pass chain changes working resolution between passes, the chained answer is resampled
+    // and blended with this much of the encoded game frame (0 = chained answer only, 1 = game frame).
+    CustomOptional<float> DlssNrPassMerge { 0.5f };
+
     // Filter used for NR supersampling (working scale > 1): the model runs above native, and this is
     // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler
     // so NR and Output Scaling can run different filters at once. Lanczos3 is the sharp default.

@@ -21,7 +21,7 @@ void RenderInput(Config* config, float menuResScale)
     int scalePercent =
         pendingScale >= 0 ? pendingScale : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
 
-    if (ImGui::SliderInt("Model resolution", &scalePercent, 25, 200, "%d%%"))
+    if (ImGui::SliderInt(I18n::Tr("Model resolution"), &scalePercent, 25, 200, "%d%%"))
         pendingScale = scalePercent;
 
     if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
@@ -31,6 +31,36 @@ void RenderInput(Config* config, float menuResScale)
     }
 
     HelpMarker("50% halves width and height. 100% uses the full input size.");
+
+    // Refinement passes (pass 2+) can run at their own resolution. Unset follows the primary scale.
+    static int pendingLaterScale = -1;
+    bool separateLater = config->DlssNrLaterPassScale.has_value();
+    if (ImGui::Checkbox(I18n::Tr("Separate later-pass resolution"), &separateLater))
+    {
+        config->DlssNrLaterPassScale = separateLater
+                                          ? std::optional<float>(config->DlssNrWorkingScale.value_or_default())
+                                          : std::optional<float> {};
+        pendingLaterScale = -1;
+    }
+
+    if (separateLater)
+    {
+        int laterPercent = pendingLaterScale >= 0
+                               ? pendingLaterScale
+                               : (int) lroundf(config->DlssNrLaterPassScale.value() * 100.0f);
+
+        if (ImGui::SliderInt(I18n::Tr("Later pass resolution"), &laterPercent, 25, 200, "%d%%"))
+            pendingLaterScale = laterPercent;
+
+        if (ImGui::IsItemDeactivatedAfterEdit() && pendingLaterScale >= 0)
+        {
+            config->DlssNrLaterPassScale = std::clamp(pendingLaterScale, 25, 200) / 100.0f;
+            pendingLaterScale = -1;
+        }
+
+        HelpMarker("Resolution the refinement passes (pass 2 and up) run at. Lower than the first pass "
+                   "keeps the chain cheap; higher recovers detail.");
+    }
 
     if (scalePercent > 100)
     {
@@ -165,9 +195,9 @@ void RenderInput(Config* config, float menuResScale)
 
                 char lbl[48];
                 if (editingRow)
-                    snprintf(lbl, sizeof(lbl), "Paper white (editing point %d)", selectedAnchor + 1);
+                    snprintf(lbl, sizeof(lbl), I18n::Tr("Paper white (editing point %d)"), selectedAnchor + 1);
                 else
-                    snprintf(lbl, sizeof(lbl), "Paper white");
+                    snprintf(lbl, sizeof(lbl), I18n::Tr("Paper white"));
 
                 if (ImGui::SliderFloat(lbl, &pw, 0.25f, 2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
                 {
@@ -186,7 +216,7 @@ void RenderInput(Config* config, float menuResScale)
             {
                 float trim = config->DlssNrScanTrim.value_or_default();
 
-                if (ImGui::SliderFloat("Trim (x the scan)", &trim, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+                if (ImGui::SliderFloat(I18n::Tr("Trim (x the scan)"), &trim, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
                     config->DlssNrScanTrim = std::clamp(trim, 0.25f, 4.0f);
 
                 ImGui::SameLine();
@@ -204,7 +234,7 @@ void RenderInput(Config* config, float menuResScale)
             float trim =
                 ofScan ? config->DlssNrScanTrim.value_or_default() : config->DlssNrWhitePointTrim.value_or_default();
 
-            if (ImGui::SliderFloat(ofScan ? "Trim (x the scan)" : "Trim (x the game's exposure)", &trim, 0.25f, 4.0f,
+            if (ImGui::SliderFloat(ofScan ? I18n::Tr("Trim (x the scan)") : I18n::Tr("Trim (x the game's exposure)"), &trim, 0.25f, 4.0f,
                                    "%.2fx", ImGuiSliderFlags_Logarithmic))
             {
                 if (ofScan)
@@ -228,7 +258,7 @@ void RenderInput(Config* config, float menuResScale)
         {
             float wpScale = config->DlssNrWhitePointScale.value_or_default();
 
-            if (ImGui::SliderFloat("Paper white", &wpScale, 0.25f, 2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
+            if (ImGui::SliderFloat(I18n::Tr("Paper white"), &wpScale, 0.25f, 2000.0f, "%.2fx", ImGuiSliderFlags_Logarithmic))
                 config->DlssNrWhitePointScale = wpScale;
 
             HelpMarker("Higher values darken the NR input; lower values brighten it.");

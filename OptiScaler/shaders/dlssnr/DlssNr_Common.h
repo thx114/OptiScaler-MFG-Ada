@@ -240,6 +240,12 @@ struct alignas(256) DlssNrConstants
     uint32_t ResidualHistoryValid;
     uint32_t ResidualMotionBaseX;
     uint32_t ResidualMotionBaseY;
+
+    // Between-model-passes clamp (dlssnr.hlsl mode 8). When a pass chain changes working resolution,
+    // the previous pass's answer is resampled onto the next pass's grid and blended with this much
+    // of the encoded game frame (gOriginal), restoring detail a low-resolution first pass could not
+    // keep. 0 = chained answer only, 1 = game frame only. Appended inside the 256-byte padding.
+    float ClampMerge;
 };
 static_assert(sizeof(DlssNrConstants) == 256);
 

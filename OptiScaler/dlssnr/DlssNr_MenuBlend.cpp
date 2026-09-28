@@ -24,7 +24,7 @@ void RenderBlend(Config* config, float menuResScale)
         HelpMarker("Match early NR brightness changes to the finished HDR image. Adds GPU work; unreliable fits fall back.");
     }
     float transfer = config->DlssNrTransferStrength.value_or_default();
-    if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
+    if (ImGui::SliderFloat(I18n::Tr("Detail strength"), &transfer, 0.0f, 2.0f, "%.2f"))
         config->DlssNrTransferStrength = transfer;
 
     ImGui::SameLine();
@@ -34,7 +34,7 @@ void RenderBlend(Config* config, float menuResScale)
     HelpMarker("0 = no detail change. 1 = normal.");
 
     float colour = config->DlssNrColourStrength.value_or_default();
-    if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))
+    if (ImGui::SliderFloat(I18n::Tr("Colour strength"), &colour, 0.0f, 4.0f, "%.2f"))
         config->DlssNrColourStrength = colour;
 
     ImGui::SameLine();
@@ -76,7 +76,7 @@ void RenderBlend(Config* config, float menuResScale)
     // Highlight guard, directly under the white point / trim -- it bounds the model's edit and
     // belongs with the exposure controls it works alongside.
     float maxRatio = config->DlssNrMaxRatio.value_or_default();
-    if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))
+    if (ImGui::SliderFloat(I18n::Tr("Highlight guard"), &maxRatio, 1.0f, 8.0f, "%.1fx"))
         config->DlssNrMaxRatio = maxRatio;
 
     ImGui::SameLine();
@@ -117,7 +117,7 @@ void RenderInspect(Config* config, float menuResScale)
         if (tags)
         {
             float tagScale = config->DlssNrTagScale.value_or_default();
-            if (ImGui::SliderFloat("Label size", &tagScale, 0.5f, 5.0f, "%.1fx"))
+            if (ImGui::SliderFloat(I18n::Tr("Label size"), &tagScale, 0.5f, 5.0f, "%.1fx"))
                 config->DlssNrTagScale = std::clamp(tagScale, 0.5f, 5.0f);
         }
     }
@@ -125,7 +125,7 @@ void RenderInspect(Config* config, float menuResScale)
     if (compare == 1)
     {
         float zoom = config->DlssNrCompareZoom.value_or_default();
-        if (ImGui::SliderFloat("Zoom", &zoom, 1.0f, 2.0f, "%.2f"))
+        if (ImGui::SliderFloat(I18n::Tr("Zoom"), &zoom, 1.0f, 2.0f, "%.2f"))
             config->DlssNrCompareZoom = std::clamp(zoom, 1.0f, 2.0f);
 
         HelpMarker("1 = fit. 2 = crop and enlarge.");
@@ -134,7 +134,7 @@ void RenderInspect(Config* config, float menuResScale)
     if (compare == 2)
     {
         float split = config->DlssNrCompareSplit.value_or_default();
-        if (ImGui::SliderFloat("Split", &split, 0.0f, 1.0f, "%.2f"))
+        if (ImGui::SliderFloat(I18n::Tr("Split"), &split, 0.0f, 1.0f, "%.2f"))
             config->DlssNrCompareSplit = std::clamp(split, 0.0f, 1.0f);
 
         HelpMarker("Move the comparison boundary.");

@@ -45,7 +45,6 @@ void PublishStatus(const void* owner, Backend backend, const StatusSnapshot& sta
 void ClearStatus(const void* owner);
 ControlRequests ReadControlRequests();
 
-void RenderMenu(::Config* config, float menuResScale);
 void RetryAfterFailure();
 bool IsRunning();
 const char* FailureReason();

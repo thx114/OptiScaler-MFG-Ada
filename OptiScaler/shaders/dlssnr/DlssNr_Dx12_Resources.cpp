@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "DlssNr_Dx12_State.h"
 
 auto DlssNr_Dx12::State::ParkNrResource(ID3D12Resource*& resource) -> void
@@ -26,7 +26,8 @@ auto DlssNr_Dx12::State::ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed) -> v
     // Check if we have cached surfaces matching the requested format and current dimensions
     if (nr.altSurfaces.format == needed &&
         nr.altSurfaces.width == nr.width && nr.altSurfaces.height == nr.height &&
-        nr.altSurfaces.workWidth == nr.workWidth && nr.altSurfaces.workHeight == nr.workHeight)
+        nr.altSurfaces.workWidth == nr.workWidth && nr.altSurfaces.workHeight == nr.workHeight &&
+        nr.altSurfaces.laterWorkWidth == nr.laterWorkWidth && nr.altSurfaces.laterWorkHeight == nr.laterWorkHeight)
     {
         std::swap(nr.output, nr.altSurfaces.output);
         std::swap(nr.passScratch, nr.altSurfaces.passScratch);
@@ -54,6 +55,8 @@ auto DlssNr_Dx12::State::ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed) -> v
         nr.altSurfaces.height = nr.height;
         nr.altSurfaces.workWidth = nr.workWidth;
         nr.altSurfaces.workHeight = nr.workHeight;
+        nr.altSurfaces.laterWorkWidth = nr.laterWorkWidth;
+        nr.altSurfaces.laterWorkHeight = nr.laterWorkHeight;
         nr.altSurfaces.output = nr.output;
         nr.altSurfaces.passScratch = nr.passScratch;
         nr.altSurfaces.passClamp = nr.passClamp;

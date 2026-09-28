@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <dlssnr/DlssNr_Proxy.h>
 #include <dlssnr/PassProfiles.h>
 #include <dlssnr/DlssNrFeature_Dx12.h>
@@ -52,6 +52,8 @@ struct ModelStateDx12
         unsigned int height = 0;
         unsigned int workWidth = 0;
         unsigned int workHeight = 0;
+        unsigned int laterWorkWidth = 0;
+        unsigned int laterWorkHeight = 0;
         ID3D12Resource* colorCopy = nullptr;
         ID3D12Resource* output = nullptr;
         ID3D12Resource* passScratch = nullptr;
@@ -74,6 +76,10 @@ struct ModelStateDx12
 
     unsigned int workWidth = 0;
     unsigned int workHeight = 0;
+    // Resolution the refinement passes (pass 1+) run at; pass 0 uses workWidth/workHeight. Equal to
+    // the work size unless DlssNrLaterPassScale sets its own scale.
+    unsigned int laterWorkWidth = 0;
+    unsigned int laterWorkHeight = 0;
 
     // The exposure readback ring contains the game's own exposure sample in texel zero.
     ID3D12Resource* meter = nullptr;

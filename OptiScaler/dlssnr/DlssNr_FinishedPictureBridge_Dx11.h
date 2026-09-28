@@ -71,9 +71,15 @@ class Dx11FinishedPictureBridge
         D3D11_TEXTURE2D_DESC desc {};
         picture->GetDesc(&desc);
         if (desc.SampleDesc.Count != 1 || desc.ArraySize != 1 || desc.MipLevels != 1 ||
-            (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_R10G10B10A2_UNORM &&
+            (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB &&
+             desc.Format != DXGI_FORMAT_R10G10B10A2_UNORM &&
              desc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT))
             return nullptr;
+        // R8G8B8A8_UNORM_SRGB 与 R8G8B8A8_UNORM 内存布局完全相同（仅采样视图差异）。
+        // 但 SRGB 变体不能用作 shared render target / shared handle 资源，创建共享纹理时
+        // 降级为 R8G8B8A8_UNORM（CopyResource 在同字节布局间可行，Dx12 消费端按 UNORM 处理）。
+        const DXGI_FORMAT sharedFormat =
+            (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM : desc.Format;
         ComPtr<ID3D11Device> sourceDevice;
         picture->GetDevice(&sourceDevice);
         ComPtr<ID3D11Device5> sourceDevice5;
@@ -106,7 +112,9 @@ class Dx11FinishedPictureBridge
         {
             D3D11_TEXTURE2D_DESC have {};
             shared11->GetDesc(&have);
-            if (have.Width != desc.Width || have.Height != desc.Height || have.Format != desc.Format)
+            // 比对用 sharedFormat：SRGB 源降级为 UNORM 后创建的共享纹理与源格式不同，
+            // 按 sharedFormat 比对避免每帧误判尺寸/格式变化而重建。
+            if (have.Width != desc.Width || have.Height != desc.Height || have.Format != sharedFormat)
             {
                 if (!Drain())
                     return nullptr;
@@ -116,6 +124,7 @@ class Dx11FinishedPictureBridge
         }
         if (!shared11)
         {
+            desc.Format = sharedFormat; // SRGB 降级为 UNORM（shared handle 资源不支持 SRGB）
             desc.Usage = D3D11_USAGE_DEFAULT;
             desc.CPUAccessFlags = 0;
             desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
