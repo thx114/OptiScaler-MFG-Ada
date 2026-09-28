@@ -16,17 +16,18 @@ RWTexture2D<float3> DestinationTexture : register(u0);
 [numthreads(16, 16, 1)]
 void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    if (dispatchThreadID.y < offset || dispatchThreadID.y > (height + offset))
+    if (dispatchThreadID.x > width || dispatchThreadID.y > height)
         return;
 
-    uint2 pixelCoord = uint2(dispatchThreadID.x, height - dispatchThreadID.y - offset);
+    uint2 sourceCoord = uint2(dispatchThreadID.x, dispatchThreadID.y + offset);
+    uint2 pixelCoord = uint2(dispatchThreadID.x, height - dispatchThreadID.y);
     
     if (velocity == 0)
     {
-        DestinationTexture[pixelCoord] = SourceTexture[dispatchThreadID.xy];
+        DestinationTexture[pixelCoord] = SourceTexture[sourceCoord];
         return;
     }
     
-    float3 srcColor = SourceTexture.Load(int3(dispatchThreadID.xy, 0));
+    float3 srcColor = SourceTexture.Load(int3(sourceCoord, 0));
     DestinationTexture[pixelCoord] = float3(srcColor.r, -srcColor.g, 0);
 }

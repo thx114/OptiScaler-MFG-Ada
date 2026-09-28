@@ -62,7 +62,7 @@ D3D12_TEXTURE_COPY_LOCATION location(ID3D12Resource* resource)
 }
 
 void run(ID3D12Device* device, unsigned int allocationW, unsigned int allocationH,
-         unsigned int activeW, unsigned int activeH, bool uav, bool writeBack)
+unsigned int activeW, unsigned int activeH, bool uav, bool writeBack, bool sharedCommon = false)
 {
     const auto desc = texture(allocationW, allocationH, uav);
     const auto active = DlssNr::PreSrColorExtent(desc, activeW, activeH);
@@ -103,7 +103,7 @@ void run(ID3D12Device* device, unsigned int allocationW, unsigned int allocation
     src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; src.PlacedFootprint = footprint;
     commands->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     // Match the production round trip, including restoring the game's readable state between copies.
-    const auto arrival = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+const auto arrival = sharedCommon ? D3D12_RESOURCE_STATE_COMMON : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     barrier(commands.Get(), game.Get(), D3D12_RESOURCE_STATE_COPY_DEST, arrival);
     barrier(commands.Get(), game.Get(), arrival, D3D12_RESOURCE_STATE_COPY_SOURCE);
     barrier(commands.Get(), compact.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -188,6 +188,9 @@ int main() try
     run(device.Get(), 3840, 2160, 2227, 1253, false, true);
     run(device.Get(), 1920, 1080, 1920, 1080, false, true);
     run(device.Get(), 2560, 1440, 2558, 1439, false, false);
+    // Shared bridge source in COMMON, active-region copy and restored state.
+    run(device.Get(), 2560, 1600, 2560, 1600, false, true, true);
+    run(device.Get(), 2560, 1600, 2558, 1599, false, false, true);
     ComPtr<ID3D12InfoQueue> messages;
     if (debugLayer && SUCCEEDED(device.As(&messages)))
     {

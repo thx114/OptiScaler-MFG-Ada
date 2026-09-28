@@ -25,6 +25,7 @@ class IFeature_Dx12 : public virtual IFeature
     std::unique_ptr<DlssNr_Dx12> NeuralRendering = nullptr;
 
     std::unique_ptr<GpuTime_Dx12> UpscalerTime = nullptr;
+    bool nrDlaaPassthroughActive = false;
 
     void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                          D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const;

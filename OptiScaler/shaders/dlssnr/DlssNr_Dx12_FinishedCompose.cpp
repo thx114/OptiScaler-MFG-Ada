@@ -2,12 +2,24 @@
 #include "DlssNr_Dx12_State.h"
 
 auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE colorSpace,
-                                          bool gameFrameHandoff) -> bool
+                                          bool gameFrameHandoff, bool dx11CopyOrdered) -> bool
 {
     if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
         !Config::Instance()->DlssNrEnabled.value_or_default())
     {
         late.Cancel();
+        return false;
+    }
+    const auto& chainConfig = *Config::Instance();
+    const auto chainCount = std::clamp(chainConfig.DlssNrPasses.value_or_default(), 1u,
+        chainConfig.DlssNrUnlockPasses.value_or_default() ? DlssNr::MaxPassCount : DlssNr::DefaultMaxPassCount);
+    if (ResolvePassChain(chainConfig, chainCount, 1, 1).count == 0)
+    {
+        late.Cancel();
+        late.fallbackValid = false;
+        nr.reset = true;
+        modelRunning = false;
+        late.Say("All model passes are disabled.");
         return false;
     }
     LateContext::ComPtr<ID3D12Device> currentDevice;
@@ -39,9 +51,31 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
     LateContext::Slot* latest = nullptr;
     const auto epoch = ::State::Instance().frameCount;
     const auto& cfg = *Config::Instance();
+    if (++late.scheduleCalls == 300)
+    {
+        LOG_INFO("DLSS-NR schedule: calls 300, fresh {}, replay {}, input-ring-full {}, GPU-ordered selections {}, FG enabled {}",
+                 late.scheduleFresh, late.scheduleReplay, late.scheduleFull, late.scheduleOrdered,
+                 cfg.FGEnabled.value_or_default());
+        late.scheduleCalls = late.scheduleFresh = late.scheduleReplay = late.scheduleFull = late.scheduleOrdered = 0;
+    }
     const bool residualOnly = DlssNr::ResolvePlacement(
         cfg.DlssNrRunBeforeSr.value_or_default(), cfg.DlssNrDeferredDlss.value_or_default(),
         cfg.DlssNrResidualAcrossRr.value_or_default(), true).deferred;
+    // Stop replacing live menus/loading screens when the upscaler stops providing guides.
+    // Keep intentional input hold separate, and never count generated FG presents as game frames.
+    const bool idleProducer = late.activity.Idle(
+        dx11CopyOrdered && gameFrameHandoff &&
+            ::State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12, GetTickCount64());
+    const bool intentionalHold = residualOnly && cfg.DlssNrHoldFrame.value_or_default() && inputHold.active;
+    if (idleProducer && !intentionalHold)
+    {
+        late.Cancel(); // Retains GPU resources/fences; only cancels pending presentation and stale replay.
+        late.heldValid = false;
+        nr.reset = true;
+        modelRunning = false;
+        late.Say("Upscaler input paused; showing the live game picture.");
+        return false;
+    }
     // Edge-triggered bridge diagnostics: log only on decision changes so a steady state
     // stays quiet while every transition (FG on/off, resizes, slot starvation) is visible.
     static long long bridgeCalls = 0;
@@ -67,8 +101,17 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             late.reset = true;
             continue;
         }
+        // The DX11 bridge waits for the producer, copies the completed game picture,
+        // then makes this presentation queue wait for that copy. The committed
+        // snapshot proves that this input is already ordered before our commands;
+        // polling CPU fence completion here needlessly skips queued-but-safe frames.
+        // Keep native/active FG and deferred residual paths on their existing policy.
+        const bool orderedHandoff = DlssNr::UseFinishedBridgeHandoff(
+            dx11CopyOrdered && ::State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12,
+            cfg.FGEnabled.value_or_default(), ::State::Instance().externalFrameGeneration,
+            slot.residualOnly, slot.bridgeHandoff.ordered);
         if (!DlssNr::FinishedInputReady(slot.producerQueue.Get() == realQueue,
-                                        slot.fence->GetCompletedValue(), slot.ready))
+                                        slot.fence->GetCompletedValue(), slot.ready, orderedHandoff))
         {
             if (!late.reportedQueueDelay)
             {
@@ -122,8 +165,74 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             latest = &held;
     }
     if (!latest)
+    {
+        // Cross-queue input still in flight. Replay the last finished NR picture so the
+        // presentation does not alternate between processed and raw frames (flicker).
+        if (late.fallbackValid && late.fallbackFinished &&
+            late.fallbackFinished->GetDesc().Width == desc.Width &&
+            late.fallbackFinished->GetDesc().Height == desc.Height &&
+            late.fallbackFinished->GetDesc().Format == desc.Format)
+        {
+            if (!late.fallbackCommands && late.device)
+            {
+                late.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                    IID_PPV_ARGS(&late.fallbackAllocator));
+                late.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                               late.fallbackAllocator.Get(), nullptr,
+                                               IID_PPV_ARGS(&late.fallbackCommands));
+                late.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&late.fallbackFence));
+                if (late.fallbackCommands)
+                    late.fallbackCommands->Close();
+            }
+            if (late.fallbackCommands && late.fallbackFence)
+            {
+                // Bounded wait so the allocator can be reused. Both the write to and the read
+                // from fallbackFinished are queued on this queue; under normal pacing the
+                // previous copy finished long ago, so this loop does not spin.
+                if (late.fallbackDone > 0 &&
+                    late.fallbackFence->GetCompletedValue() < late.fallbackDone)
+                {
+                    for (uint32_t spin = 0;
+                         spin < 2000 && late.fallbackFence->GetCompletedValue() < late.fallbackDone;
+                         ++spin)
+                        ;
+                    if (late.fallbackFence->GetCompletedValue() < late.fallbackDone)
+                        return false; // GPU heavily backed up; skip rather than stall present
+                }
+                if (FAILED(late.fallbackAllocator->Reset()) ||
+                    FAILED(late.fallbackCommands->Reset(late.fallbackAllocator.Get(), nullptr)))
+                    return false;
+                auto* cmd = late.fallbackCommands.Get();
+                Barrier(cmd, late.fallbackFinished.Get(), late.fallbackState,
+                        D3D12_RESOURCE_STATE_COPY_SOURCE);
+                Barrier(cmd, color, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
+                cmd->CopyResource(color, late.fallbackFinished.Get());
+                Barrier(cmd, color, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+                late.fallbackState = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                if (FAILED(cmd->Close()))
+                    return false;
+                ID3D12CommandList* lists[] = { cmd };
+                queue->ExecuteCommandLists(1, lists);
+                if (FAILED(queue->Signal(late.fallbackFence.Get(), ++late.fallbackDone)))
+                    return false;
+                ++late.scheduleReplay;
+                static bool reportedReplay = false;
+                if (!reportedReplay)
+                {
+                    reportedReplay = true;
+                    LOG_INFO("DLSS-NR finished picture: replaying last finished frame while cross-queue input is in flight");
+                }
+                return true;
+            }
+        }
         return false; // loading screen, another swapchain, or this real frame was already consumed
+    }
     auto& slot = *latest;
+    if (DlssNr::UseFinishedBridgeHandoff(
+            dx11CopyOrdered && ::State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12,
+            cfg.FGEnabled.value_or_default(), ::State::Instance().externalFrameGeneration,
+            slot.residualOnly, slot.bridgeHandoff.ordered) && slot.fence->GetCompletedValue() < slot.ready)
+        ++late.scheduleOrdered;
     const bool holdFinished = slot.residualOnly && Config::Instance()->DlssNrHoldFrame.value_or_default() &&
                               inputHold.active;
     if (!holdFinished)
@@ -364,6 +473,28 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
         Barrier(cmd, slot.depth.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                 D3D12_RESOURCE_STATE_COPY_DEST);
     }
+    // Snapshot the finished NR picture so a later frame whose cross-queue input is still
+    // in flight can replay it instead of presenting an unprocessed frame.
+    if (!slot.residualOnly && nr.successfulDispatches > before)
+    {
+        if (!late.fallbackFinished || late.fallbackFinished->GetDesc().Width != desc.Width ||
+            late.fallbackFinished->GetDesc().Height != desc.Height ||
+            late.fallbackFinished->GetDesc().Format != desc.Format)
+        {
+            late.fallbackFinished.Attach(
+                CreateScratch(late.device.Get(), desc.Format, (unsigned) desc.Width, (unsigned) desc.Height));
+            late.fallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            late.fallbackValid = false;
+        }
+        if (late.fallbackFinished)
+        {
+            Barrier(cmd, late.fallbackFinished.Get(), late.fallbackState, D3D12_RESOURCE_STATE_COPY_DEST);
+            Barrier(cmd, color, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            cmd->CopyResource(late.fallbackFinished.Get(), color);
+            Barrier(cmd, color, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+            late.fallbackState = D3D12_RESOURCE_STATE_COPY_DEST;
+        }
+    }
     if (FAILED(cmd->Close()))
     {
         late.heldFailed |= holdFinished;
@@ -390,6 +521,10 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
         late.heldSlotSerial = slot.serial;
     }
     const bool ran = slot.residualOnly ? appliedResidual : nr.successfulDispatches > before;
+    if (ran)
+        ++late.scheduleFresh;
+    if (ran && !slot.residualOnly && late.fallbackFinished)
+        late.fallbackValid = true; // snapshot was queued together with this finished picture
     late.reset = !ran;
     late.Say(!Config::Instance()->DlssNrApplyModel.value_or_default() ? "NR changes are hidden."
              : ran                                                    ? (slot.residualOnly

@@ -445,7 +445,9 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         // upscaled frame. Only applies to DLSS (NGX) features with sharpening off (NGX would otherwise
         // apply sharpening inside evaluate); FSR/XeSS already cheap and their evaluate may do more than
         // a copy at 1:1 (sharpness/reactive), so leave those alone.
+        // NR must enter the full pipeline so guide capture and RCAS still run.
         const bool dlssPassthrough1to1 =
+            !Config::Instance()->DlssNrEnabled.value_or_default() &&
             dx12Feature->GetUpscalerType() == Upscaler::DLSS &&
             !dx12Feature->SharpenEnabled() &&
             dx12Feature->RenderWidth() != 0 && dx12Feature->TargetWidth() != 0 &&
@@ -460,9 +462,9 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             auto rh = dx12Feature->RenderHeight();
             auto tw = dx12Feature->TargetWidth();
             auto th = dx12Feature->TargetHeight();
-            LOG_INFO("ratio diag: passthrough {} type {} sharpen {} render {} {} target {} {}",
+            LOG_INFO("ratio diag: legacy passthrough {} type {} sharpen {} render {} {} target {} {}, NR pipeline {}",
                      (int)dlssPassthrough1to1, (int)ut, (int)dx12Feature->SharpenEnabled(), (int)rw, (int)rh,
-                     (int)tw, (int)th);
+                     (int)tw, (int)th, Config::Instance()->DlssNrEnabled.value_or_default());
         }
 
         if (dlssPassthrough1to1)

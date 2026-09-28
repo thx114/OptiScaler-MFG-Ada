@@ -1,5 +1,6 @@
 ﻿#include "pch.h"
 #include "dx11_with_dx12_sc.h"
+#include "ReShadePresentCapture.h"
 
 #include <with_dx12/with_dx12.h>
 #include <dlssnr/DlssNrFeature_Dx12.h>
@@ -134,6 +135,13 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
 
     _RefreshCachedSwapchainDesc();
 
+    if constexpr (FgOnly::Enabled)
+    {
+        _captureNative = ReShadePresentCapture::Install(_real);
+        if (_captureNative == nullptr)
+            LOG_WARN("FG companion capture: ReShade native boundary unavailable; legacy pre-addon copy remains");
+    }
+
     LOG_INFO("Dx11wDx12SC {} created, real: {:X}, fg: {:X}, dx11: {:X}, dx12: {:X}, queue: {:X}", _id, (UINT64) _real,
              (UINT64) _fgSwapChain, (UINT64) _dx11Device, (UINT64) _dx12Device, (UINT64) _dx12CommandQueue);
 }
@@ -143,6 +151,7 @@ Dx11wDx12SC::~Dx11wDx12SC()
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropObjects();
 
+    SafeRelease(_captureNative);
     SafeRelease(_real4);
     SafeRelease(_real3);
     SafeRelease(_real2);
@@ -324,6 +333,32 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (doTiming) tCopyShared = tNow();
     if (!_CopyDx11BackBufferToShared(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
+    bool hiddenPresented = false;
+    if (_captureNative != nullptr)
+    {
+        // Keep the baseline copy above as a safe fallback if another hook skips native Present.
+        // The second copy runs AFTER ReShade/addon writes but BEFORE the native flip/discard.
+        // Never acquire/copy a rotated backbuffer after Present returns.
+        struct CopyContext { Dx11wDx12SC* owner; UINT index; } copyContext {this, dx11Index};
+        PresentCapture::Request request {_captureNative, &copyContext, [](void* data) {
+            auto* context = static_cast<CopyContext*>(data);
+            return context->owner->_CopyDx11BackBufferToShared(context->index);
+        }};
+        HRESULT hiddenResult;
+        {
+            PresentCapture::Scope captureScope(request);
+            hiddenResult = _real->Present(0, Flags);
+        }
+        hiddenPresented = true;
+        if (FAILED(hiddenResult))
+        {
+            LOG_WARN("FG companion capture: hidden Present failed {:X}", (UINT)hiddenResult);
+            return hiddenResult;
+        }
+        if (doTiming)
+            LOG_INFO("FG companion capture: attempted={} copied={} hiddenResult={:X} dx11Index={}",
+                     request.attempted, request.succeeded, (UINT)hiddenResult, dx11Index);
+    }
     if (doTiming) tWaitDx11 = tNow();
     if (!_WaitDx11ThenDx12())
         return DXGI_ERROR_DEVICE_REMOVED;
@@ -352,7 +387,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     const bool fgHookedPresenter =
         State::Instance().currentFGSwapchain == _fgSwapChain && !FGHooks::IsDx12InteropPresentSC(_fgSwapChain);
 
-    // The game-facing DX11 swapchain is never presented in this wrapper.
+    // Only the DX12 swapchain is visible; the hidden DX11 chain still runs addon Present work.
     // For a plain external DX12 presenter, draw Opti's overlay here.
     // For a real FG swapchain, FGHooks::FGPresent/LocalPresent owns overlay/present-side work;
     // drawing it here would double-enter the overlay path before the FG present hook.
@@ -365,7 +400,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
               dx11Index, _real3 != nullptr ? _real3->GetCurrentBackBufferIndex() : 0xFFFFFFFF, _currentFakeIndex,
               _bufferCount);
 
-    if (_real != nullptr)
+    if (_real != nullptr && !hiddenPresented)
     {
         UINT realFlags = Flags;
 
@@ -1097,8 +1132,13 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
     if (allocator == nullptr)
         return false;
 
+    static std::atomic_uint64_t copySamples {0};
+    const bool sample = (copySamples.fetch_add(1, std::memory_order_relaxed) % 300) == 0;
+    const auto start = sample ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point {};
+
     if (!_WaitForCopyAllocator(copySlot))
         return false;
+    const auto allocatorReady = sample ? std::chrono::steady_clock::now() : start;
 
     auto result = allocator->Reset();
     if (FAILED(result))
@@ -1114,11 +1154,21 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
         return false;
     }
 
+    const auto beforeIndex = sample ? std::chrono::steady_clock::now() : start;
     UINT fgIndex = _fgSwapChain->GetCurrentBackBufferIndex();
+    const auto indexReady = sample ? std::chrono::steady_clock::now() : start;
     LOG_DEBUG("dx11Index {}, fgIndex {}", dx11Index, fgIndex);
 
     ID3D12Resource* fgBackBuffer = nullptr;
     result = _fgSwapChain->GetBuffer(fgIndex, IID_PPV_ARGS(&fgBackBuffer));
+    if (sample)
+    {
+        const auto bufferReady = std::chrono::steady_clock::now();
+        auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b-a).count(); };
+        LOG_INFO("FG copy acquire: slot={} index={} allocatorWait={:.3f} reset={:.3f} indexWait={:.3f} getBuffer={:.3f}ms",
+                 copySlot, fgIndex, ms(start, allocatorReady), ms(allocatorReady, beforeIndex),
+                 ms(beforeIndex, indexReady), ms(indexReady, bufferReady));
+    }
     if (FAILED(result) || fgBackBuffer == nullptr)
     {
         LOG_ERROR("FG GetBuffer({}) failed: {:X}", fgIndex, (UINT) result);

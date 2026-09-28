@@ -292,7 +292,7 @@ void IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
     if (type != FG_ResourceType::Depth && type != FG_ResourceType::Velocity)
         return;
 
-    auto fIndex = GetIndex();
+    const auto fIndex = resource->frameIndex >= 0 ? resource->frameIndex : GetIndex();
     ID3D12Resource* flipOutput = nullptr;
     std::unique_ptr<RF_Dx12>* flip = nullptr;
 
@@ -312,7 +312,6 @@ void IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
         if (_depthFlip.get() == nullptr)
         {
             _depthFlip = std::make_unique<RF_Dx12>("DepthFlip", _device);
-            return;
         }
 
         flip = &_depthFlip;
@@ -322,7 +321,6 @@ void IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
         if (_mvFlip.get() == nullptr)
         {
             _mvFlip = std::make_unique<RF_Dx12>("VelocityFlip", _device);
-            return;
         }
 
         flip = &_mvFlip;
@@ -338,7 +336,8 @@ void IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
         }
 
         auto result = flip->get()->Dispatch((ID3D12GraphicsCommandList*) cmdList, resource->resource, flipOutput,
-                                            resource->width, resource->height, true);
+                                            resource->width, resource->height, type == FG_ResourceType::Velocity,
+                                            fIndex, resource->state);
 
         if (result)
         {

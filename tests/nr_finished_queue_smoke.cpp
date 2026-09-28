@@ -49,10 +49,39 @@ int main() try
         Expect(DlssNr::FinishedInputReady(false, inputReady->GetCompletedValue(), frame),
                "Completed cross-queue input remained unavailable");
     }
+    // Model the bridge's already-established render -> interop -> present chain.
+    // Keep render deliberately unfinished on the CPU while accepting ordered input.
+    ComPtr<ID3D12CommandQueue> interop;
+    ComPtr<ID3D12Fence> startGate, bridgeReady, composeDone;
+    Check(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&interop)));
+    Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&startGate)));
+    Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&bridgeReady)));
+    Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&composeDone)));
+    for (UINT64 frame = 17; frame <= 32; ++frame)
+    {
+        Check(render->Wait(startGate.Get(), frame));
+        Check(render->Signal(inputReady.Get(), frame));
+        DlssNr::FinishedBridgeHandoff handoff;
+        handoff.Prepare(true, frame);
+        Check(interop->Wait(inputReady.Get(), frame));
+        handoff.Commit(true, frame);
+        Check(interop->Signal(bridgeReady.Get(), frame));
+        Check(present->Wait(bridgeReady.Get(), frame));
+        const bool accepted = DlssNr::FinishedInputReady(false, inputReady->GetCompletedValue(), frame,
+                                                        handoff.ordered);
+        Check(present->Signal(composeDone.Get(), frame));
+        const bool premature = composeDone->GetCompletedValue() >= frame;
+        Check(startGate->Signal(frame)); // release GPU gate even on assertion failure
+        Check(composeDone->SetEventOnCompletion(frame, event));
+        Expect(WaitForSingleObject(event, 5000) == WAIT_OBJECT_0, "Ordered bridge queues stalled");
+        Expect(accepted, "Rejected a proven GPU-ordered bridge input");
+        Expect(!premature, "Presentation bypassed the bridge dependency");
+        Expect(inputReady->GetCompletedValue() >= frame, "Composition overtook input preparation");
+    }
     CloseHandle(event);
     Expect(!DlssNr::FinishedInputReady(false, UINT64_MAX, 1), "Accepted a removed device");
     Expect(!DlssNr::FinishedInputReady(true, UINT64_MAX, 1), "Same-queue bypassed device removal");
-    puts("PASS finished-picture queue readiness: native FG dependency, same-queue order, completed input, device removal");
+    puts("PASS finished-picture queue readiness: native FG dependency, same-queue order, GPU-ordered bridge, device removal");
     return 0;
 }
 catch (const std::exception& e) { puts(e.what()); return 1; }

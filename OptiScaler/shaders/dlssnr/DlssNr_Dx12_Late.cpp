@@ -18,6 +18,8 @@ auto DlssNr_Dx12::State::LateContext::Finished(const Slot& slot) -> bool
 
 auto DlssNr_Dx12::State::LateContext::Cancel() -> void
 {
+    fallbackValid = false;
+    activity.Clear();
     // Submitted copies may still be in flight; their fences still protect reuse.
     for (auto& slot : slots)
         if (slot.submitted)
@@ -61,6 +63,7 @@ auto DlssNr_Dx12::State::LateContext::Acquire(ID3D12GraphicsCommandList* cmd) ->
         return nullptr;
     }
     device = currentDevice;
+    activity.Input(GetTickCount64()); // Also renew when the ring is busy: SR is still producing.
     tracking.store(true);
     // Only the lightweight submission hook is needed, including when FG is disabled.
     ResTrack_Dx12::HookLateNrQueue(device.Get());
@@ -73,6 +76,7 @@ auto DlssNr_Dx12::State::LateContext::Acquire(ID3D12GraphicsCommandList* cmd) ->
         }
     if (!next)
     {
+        ++scheduleFull;
         Say("Waiting for the previous picture to finish.");
         return nullptr;
     }
@@ -112,6 +116,7 @@ auto DlssNr_Dx12::State::LateContext::Arm(Slot& slot, ID3D12GraphicsCommandList*
     if (Util::CheckForRealObject(__FUNCTION__, cmd, (IUnknown**) &real))
         slot.producer = real;
     slot.serial = ++serial;
+    slot.bridgeHandoff.Reset();
     slot.ready = slot.done + 1;
     slot.done = slot.ready;
     slot.submitted = false;

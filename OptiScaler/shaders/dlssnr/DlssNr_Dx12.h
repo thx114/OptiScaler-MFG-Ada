@@ -96,6 +96,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
                      ID3D12CommandQueue* queue, bool rayReconstruction, unsigned long long submissionEpoch,
                      bool interop = false, uint32_t featureFlags = 0);
     void ResetFinishedCommands(ID3D12CommandList* cmd);
+    void Dx11FinishedHandoff(ID3D12CommandQueue* queue, bool commit);
     void SubmitFinishedCommands(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
     bool WaitFinished();
     void ApplyFinished(ID3D12Resource* picture, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE space,

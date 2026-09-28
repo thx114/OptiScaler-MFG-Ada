@@ -26,6 +26,19 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     Config& cfg = *Config::Instance();
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
 
+    if constexpr (FgOnly::Enabled)
+    {
+        // Never silently replace the external NR producer with FSR/XeSS/W12.
+        if (upscaler == Upscaler::DLSSD || !primaryGpu.dlssCapable || !state.NVNGX_DLSS_Path.has_value())
+        {
+            LOG_ERROR("FG-only companion requires native DLSS SR; requested backend unavailable");
+            return false;
+        }
+        *feature = std::make_unique<DLSSFeatureDx11>(handleId, parameters);
+        cfg.Dx11Upscaler.set_volatile_value(Upscaler::DLSS);
+        return (*feature)->ModuleLoaded();
+    }
+
     switch (upscaler)
     {
     case Upscaler::XeSS:
@@ -125,6 +138,9 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
 {
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
+
+    if constexpr (FgOnly::Enabled)
+        state.newBackend = Upscaler::DLSS;
 
     const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && state.newBackend == Upscaler::DLSS;
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
@@ -228,6 +244,13 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
         if (!initResult || !contextData->feature->ModuleLoaded())
         {
             LOG_ERROR("init failed with {0} feature", UpscalerDisplayName(state.newBackend));
+
+            if constexpr (FgOnly::Enabled)
+            {
+                state.newBackend = Upscaler::Reset;
+                state.changeBackend[handleId] = false;
+                return false;
+            }
 
             if (state.newBackend != Upscaler::DLSSD)
             {

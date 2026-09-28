@@ -248,7 +248,11 @@ void DlssNr_Dx12::Retire(std::unique_ptr<DlssNr_Dx12> owner)
     // across multiple frames even while the previous work completes. When Feature is destroyed,
     // the ~IFeature_Dx12 will call Retire() again and that's when activeNrOwner is truly no longer valid.
     // if (wasActive) activeNrOwner = nullptr;  // REMOVED: keeps owner active for FinishedPicture
-    DlssNr::ClearStatus(owner.get());
+
+    // Do NOT call ClearStatus: it zeros everything including running flag, making IsRunning() false
+    // Just keep the status as-is so activeNrOwner remains "running" to the UI
+    // DlssNr::ClearStatus(owner.get());
+
     {
         std::lock_guard stateLock(owner->_state->mutex);
         owner->_state->late.Cancel();
@@ -677,6 +681,20 @@ void DlssNr_Dx12::DiagnosePipeline(unsigned stage, ID3D12GraphicsCommandList* cm
 }
 
 void DlssNr_Dx12::ResetFinishedCommands(ID3D12CommandList* cmd) { _state->FinishedPictureResetCommandList(cmd); }
+void DlssNr_Dx12::Dx11FinishedHandoff(ID3D12CommandQueue* queue, bool commit)
+{
+    std::lock_guard lock(_state->mutex);
+    ID3D12CommandQueue* real = nullptr;
+    auto* identity = Util::CheckForRealObject(__FUNCTION__, queue, (IUnknown**) &real) ? real : queue;
+    for (auto& slot : _state->late.slots)
+    {
+        const bool eligible = slot.pending && slot.submitted && slot.producerQueue.Get() == identity;
+        if (commit)
+            slot.bridgeHandoff.Commit(eligible, slot.ready);
+        else
+            slot.bridgeHandoff.Prepare(eligible, slot.ready);
+    }
+}
 void DlssNr_Dx12::SubmitFinishedCommands(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
     _state->FinishedPictureSubmitted(queue, count, lists);
@@ -690,17 +708,22 @@ void DlssNr_Dx12::ApplyFinishedBridge(ID3D12Resource* picture, ID3D12CommandQueu
         !Config::Instance()->DlssNrEnabled.value_or_default())
         _state->late.Cancel();
     else if (picture && queue)
-        _state->ApplyFinishedColor(picture, queue, space, true);
+        _state->ApplyFinishedColor(picture, queue, space, true, true);
     _state->Publish();
 }
 void DlssNr_Dx12::ApplyFinished(ID3D12Resource* picture, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE space,
                                 bool gameFrameHandoff)
 {
     std::lock_guard lock(_state->mutex);
+    // The native D3D12 path must still process the game's real SR output when
+    // DLSSG/MFG is active: ApplyFinished is called from the FG present hook
+    // with the finished game picture.  Only the Dx11wDx12 bridge path needs
+    // to suppress the duplicate call (that path is gated in
+    // ApplyToFinishedPicture).  Blocking here whenever DLSSG is active left
+    // ZZZ permanently at "waiting for a super-resolver" even though its DLSS
+    // evaluate calls were captured successfully.
     if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
-        !Config::Instance()->DlssNrEnabled.value_or_default() ||
-        ::State::Instance().externalFrameGeneration ||
-        ::State::Instance().activeFgOutput == FGOutput::DLSSG)
+        !Config::Instance()->DlssNrEnabled.value_or_default())
         _state->late.Cancel();
     else if (picture && queue)
         _state->ApplyFinishedColor(picture, queue, space, gameFrameHandoff);
@@ -728,6 +751,14 @@ void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
     const auto owners = nrOwners;
     for (auto* owner : owners)
         owner->ResetFinishedCommands(cmd);
+}
+void FinishedPictureDx11Handoff(ID3D12CommandQueue* queue, bool commit)
+{
+    std::lock_guard lock(nrOwnersMutex);
+    NrNotificationScope notification;
+    const auto owners = nrOwners;
+    for (auto* owner : owners)
+        owner->Dx11FinishedHandoff(queue, commit);
 }
 void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {

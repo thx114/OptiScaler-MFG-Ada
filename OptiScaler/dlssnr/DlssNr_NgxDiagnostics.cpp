@@ -93,6 +93,8 @@ void FileReport(const std::filesystem::path& path, const char* kind, bool hashFi
 }
 void Install(NVSDK_NGX_LoggingInfo& logging)
 {
+    if constexpr (FgOnly::Enabled)
+        return; // Preserve the game's/external addon's NGX callback and verbosity.
     std::lock_guard lock(sinkMutex);
     if (logging.LoggingCallback != Callback) original = logging;
     logging.LoggingCallback = Callback;

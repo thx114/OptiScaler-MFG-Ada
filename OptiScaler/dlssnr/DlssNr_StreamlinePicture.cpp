@@ -103,6 +103,10 @@ template <bool Local> struct Hooks
 
 void* Wrap(const char* name, GetFunction getFunction, bool local)
 {
+    // The companion must not interpose OptiScaler NR on either Streamline runtime.
+    // Leave the original Present/Create hooks available to the external addon.
+    if constexpr (FgOnly::Enabled)
+        return nullptr;
     if (local && (!State::Instance().gameQuirks[GameQuirk::Kcd2NrBeforeFg] ||
                   State::Instance().activeFgNvngx != FGNvngxReplacement::None))
         return nullptr;

@@ -130,7 +130,17 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     const unsigned int configuredPasses =
         std::clamp(cfg.DlssNrPasses.value_or_default(), 1u,
                    cfg.DlssNrUnlockPasses.value_or_default() ? DlssNr::MaxPassCount : DlssNr::DefaultMaxPassCount);
-    const unsigned int requestedPasses = configuredPasses;
+    passChain = ResolvePassChain(cfg, configuredPasses, width, height);
+    const unsigned int requestedPasses = passChain.count;
+    if (requestedPasses == 0)
+    {
+        nr.reset = true;
+        modelRunning = false;
+        // Successful identity operation: do not replay an older NR result when every layer is disabled.
+        ++nr.successfulDispatches;
+        device->Release();
+        return;
+    }
     for (auto& model : nr.models)
         model.AdvanceEpoch(frame.SubmissionEpoch);
     if ((!NVNGXProxy::IsDx12Inited() && !NVNGXProxy::InitDx12(device)) || !DlssNr::Proxy::Context::Available())
@@ -143,20 +153,11 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     }
 
     // Only the model runs at working resolution; source and composition remain at native size.
-    float workScale = cfg.DlssNrWorkingScale.value_or_default();
-    if (!std::isfinite(workScale))
-        workScale = 1.0f;
-    workScale = workScale < 0.25f ? 0.25f : (workScale > 2.0f ? 2.0f : workScale);
-    const auto workWidth = (unsigned int) (width * workScale + 0.5f);
-    const auto workHeight = (unsigned int) (height * workScale + 0.5f);
-
-    // Refinement passes (pass 1+) run at their own scale; unset means they follow the primary scale.
-    float laterScale = cfg.DlssNrLaterPassScale.has_value() ? cfg.DlssNrLaterPassScale.value() : workScale;
-    if (!std::isfinite(laterScale))
-        laterScale = workScale;
-    laterScale = laterScale < 0.25f ? 0.25f : (laterScale > 2.0f ? 2.0f : laterScale);
-    const auto laterWorkWidth = (unsigned int) (width * laterScale + 0.5f);
-    const auto laterWorkHeight = (unsigned int) (height * laterScale + 0.5f);
+    const float workScale = passChain.passes[0].scale;
+    const auto workWidth = passChain.passes[0].width;
+    const auto workHeight = passChain.passes[0].height;
+    const auto laterWorkWidth = passChain.passes[requestedPasses - 1].width;
+    const auto laterWorkHeight = passChain.passes[requestedPasses - 1].height;
     const bool reduced = workWidth != width || workHeight != height;
     if (!PrepareRunModels(cmdList, device, frame, desc, { width, height }, { workWidth, workHeight },
                           { laterWorkWidth, laterWorkHeight }, workScale, requestedPasses))
@@ -343,12 +344,14 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     int result = NVSDK_NGX_Result_Success;
     const bool enlargementReset = nr.reset;
     bool compositionSucceeded = false;
+    unsigned int completedPasses = 0;
+    unsigned int answerWidth = workWidth, answerHeight = workHeight;
 
     for (unsigned int pass = 0; pass < effectivePasses && result == NVSDK_NGX_Result_Success; ++pass)
     {
-        // Pass 0 runs at the primary working size; refinement passes run at the later-pass size.
-        const auto passW = pass == 0 ? workWidth : laterWorkWidth;
-        const auto passH = pass == 0 ? workHeight : laterWorkHeight;
+        // Each enabled layer evaluates at its own content extent.
+        const auto passW = passChain.passes[pass].width;
+        const auto passH = passChain.passes[pass].height;
         MakeModelWritable(passOutput);
         bool evaluated = false;
         result = static_cast<int>(nr.models[pass].Run(
@@ -365,21 +368,47 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
         finalAnswer = passOutput;
         MakeModelReadable(finalAnswer);
+        ++completedPasses;
+        answerWidth = passW;
+        answerHeight = passH;
+
+        const float blend = passChain.passes[pass].blend;
+        if (blend < 1.0f)
+        {
+            // Never read/write the same raster: passInput may be passClamp. Blend into the spare answer.
+            auto* mixed = passOutput == nr.output ? nr.passScratch : nr.output;
+            if (!mixed) { clampFailed = true; finalAnswer = nullptr; break; }
+            MakeModelWritable(mixed);
+            DlssNrConstants mix {};
+            mix.Mode = DlssNrMode_ClampProxy;
+            mix.Width = passW;
+            mix.Height = passH;
+            mix.SourceContentWidth = mix.ModelContentWidth = passW;
+            mix.SourceContentHeight = mix.ModelContentHeight = passH;
+            mix.ClampMerge = 1.0f - blend;
+            if (!shader.DispatchPass(cmdList, mix, finalAnswer, nullptr, passInput, nullptr, nullptr, mixed,
+                                     nullptr, nullptr))
+            { clampFailed = true; finalAnswer = nullptr; break; }
+            MakeModelReadable(mixed);
+            finalAnswer = mixed;
+        }
 
         if (pass + 1 < effectivePasses)
         {
-            // The clamp between passes targets the next pass's resolution. When that differs from
-            // this pass's output the shader resamples; ClampMerge blends the encoded game frame back
-            // in so detail the cheap first pass lost survives into the refinement pass.
-            // The next pass is always a refinement pass, so it runs at the later-pass size.
-            const auto nextW = laterWorkWidth;
-            const auto nextH = laterWorkHeight;
+            // Resample the blended result into the next enabled layer's input extent.
+            // This stage no longer injects the original game frame into every boundary.
+            const auto nextW = passChain.passes[pass + 1].width;
+            const auto nextH = passChain.passes[pass + 1].height;
             MakeModelWritable(nr.passClamp);
             DlssNrConstants clamp {};
             clamp.Mode = DlssNrMode_ClampProxy;
             clamp.Width = nextW;
             clamp.Height = nextH;
-            clamp.ClampMerge = std::clamp(cfg.DlssNrPassMerge.value_or_default(), 0.0f, 1.0f);
+            clamp.ClampMerge = 0.0f; // per-layer blend was applied above, against this layer's input
+            // The chain rasters are allocated at max(work, later); the region that holds this
+            // pass's answer is only passW x passH, and the shader resamples from that region.
+            clamp.SourceContentWidth = passW;
+            clamp.SourceContentHeight = passH;
             if (!shader.DispatchPass(cmdList, clamp, finalAnswer, nullptr, nr.colorCopy, nullptr, nullptr, nr.passClamp,
                                      nullptr, nullptr))
             {
@@ -391,6 +420,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
             MakeModelReadable(nr.passClamp);
             passInput = nr.passClamp;
             passOutput = passOutput == nr.output ? nr.passScratch : nr.output;
+
         }
     }
 
@@ -419,16 +449,28 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         // that back to the frame. At strength zero the result is what the upscaler produced, exactly, and
         // anything the model left alone is untouched rather than round-tripped through the curve.
         auto resolveParams = MakeResolveConstants(encoded, effectivePasses);
+        {
+            // The answer raster is shared at max(work, later) but only the last pass's working
+            // region carries this frame's content; the resolve samples that region, not the padding.
+            const auto answerW = answerWidth;
+            const auto answerH = answerHeight;
+            resolveParams.ModelContentWidth = answerW;
+            resolveParams.ModelContentHeight = answerH;
+        }
 
         // Downsample the model answer to native for composition; fall back to the working-size pair.
         // The final answer is NPSR and the native output rests in UAV.
         bool superDownOk = false;
-        if (workScale > 1.0f && nr.superDown != nullptr && nr.outputNative != nullptr &&
+        if (answerWidth == workWidth && answerHeight == workHeight &&
+            passChain.maxWidth == workWidth && passChain.maxHeight == workHeight &&
+            workScale > 1.0f && nr.superDown != nullptr && nr.outputNative != nullptr &&
             nr.superDown->DispatchResources(cmdList, finalAnswer, nr.outputNative))
         {
             Barrier(cmdList, nr.outputNative, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             superDownOk = true;
+            resolveParams.ModelContentWidth = width;
+            resolveParams.ModelContentHeight = height;
         }
 
         ID3D12Resource* resolveProxy = superDownOk ? nr.colorCopy : modelInput;
@@ -439,7 +481,13 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
             auto* enlarged = EnlargeMatchedResidual(cmdList, device, modelInput, finalAnswer, depthIn, motionIn,
                                                     frame, resolveParams, enlargementReset, timingQueue);
             enlargementReady = enlarged != nullptr;
-            if (enlarged) { resolveAnswer = enlarged; resolveParams.Transfer = 2; }
+            if (enlarged)
+            {
+                resolveAnswer = enlarged;
+                resolveParams.Transfer = 2;
+                resolveParams.ModelContentWidth = width;
+                resolveParams.ModelContentHeight = height;
+            }
             if (enlarged && resolveParams.DebugView == 2)
             { resolveAnswer = finalAnswer; resolveParams.Transfer = 1; } // Inspect the actual model answer.
         }
@@ -462,6 +510,43 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         {
             Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+
+        // Diagnostic: dump the whole pass chain whenever any part of it changes. Later-pass
+        // resolution bugs are otherwise invisible -- the compose report only tracks work size.
+        struct ChainReport
+        {
+            unsigned w = 0, h = 0, workW = 0, workH = 0, laterW = 0, laterH = 0;
+            unsigned eff = 0, done = 0, contentW = 0, contentH = 0;
+            unsigned ansTexW = 0, ansTexH = 0, proxyTexW = 0, proxyTexH = 0;
+            int answerSlot = -1, proxySlot = -1;
+            bool operator!=(const ChainReport& o) const
+            {
+                return w != o.w || h != o.h || workW != o.workW || workH != o.workH || laterW != o.laterW ||
+                       laterH != o.laterH || eff != o.eff || done != o.done || contentW != o.contentW ||
+                       contentH != o.contentH || ansTexW != o.ansTexW || ansTexH != o.ansTexH ||
+                       proxyTexW != o.proxyTexW || proxyTexH != o.proxyTexH || answerSlot != o.answerSlot ||
+                       proxySlot != o.proxySlot;
+            }
+        };
+        static ChainReport loggedChain;
+        ChainReport chainNow { width,          height,           workWidth,        workHeight,
+                               laterWorkWidth, laterWorkHeight,  effectivePasses,  completedPasses,
+                               resolveParams.ModelContentWidth, resolveParams.ModelContentHeight,
+                               resolveAnswer ? (unsigned) resolveAnswer->GetDesc().Width : 0u,
+                               resolveAnswer ? (unsigned) resolveAnswer->GetDesc().Height : 0u,
+                               resolveProxy ? (unsigned) resolveProxy->GetDesc().Width : 0u,
+                               resolveProxy ? (unsigned) resolveProxy->GetDesc().Height : 0u,
+                               resolveAnswer == nr.output ? 0 : (resolveAnswer == nr.passScratch ? 1 : (resolveAnswer == nr.outputNative ? 2 : (resolveAnswer == nr.passClamp ? 3 : 4))),
+                               resolveProxy == nr.colorCopy ? 0 : (resolveProxy == nr.colorSmall ? 1 : (resolveProxy == modelInput ? 2 : 3)) };
+        if (loggedChain != chainNow)
+        {
+            LOG_INFO("DLSS-NR chain: native {}x{}, work {}x{}, later {}x{}, effective {}, completed {}, "
+                     "answerSlot {} ({}x{}), proxySlot {} ({}x{}), modelContent {}x{}",
+                     chainNow.w, chainNow.h, chainNow.workW, chainNow.workH, chainNow.laterW, chainNow.laterH,
+                     chainNow.eff, chainNow.done, chainNow.answerSlot, chainNow.ansTexW, chainNow.ansTexH,
+                     chainNow.proxySlot, chainNow.proxyTexW, chainNow.proxyTexH, chainNow.contentW, chainNow.contentH);
+            loggedChain = chainNow;
         }
 
         const bool resolved = enlargementReady && shader.DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer,

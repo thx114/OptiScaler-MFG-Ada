@@ -802,6 +802,14 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     }
     else
     {
+        if constexpr (FgOnly::Enabled)
+        {
+            LOG_ERROR("FG-only native DLSS initialization failed; no replacement upscaler will be loaded");
+            if (shouldRestoreSigs)
+                D3D12Hooks::RestoreRoot(InCmdList);
+            D3D12Hooks::SetRootSignatureTracking(true);
+            return NVSDK_NGX_Result_Fail;
+        }
         const auto fallback = upscalerBackend == Upscaler::DLSSD && InFeatureID == NVSDK_NGX_Feature_SuperSampling
                                   ? GetUpscalerBackend(false)
                                   : Upscaler::FSR21;
@@ -1132,6 +1140,11 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
 
         evalCounter = 0;
 
+        if (FgOnly::Enabled && !successfulPhase)
+        {
+            D3D12Hooks::SetRootSignatureTracking(true);
+            return NVSDK_NGX_Result_Fail;
+        }
         if (ctxData.changeBackendCounter != 0 || !successfulPhase)
         {
             D3D12Hooks::SetRootSignatureTracking(true);
@@ -1140,6 +1153,11 @@ static NVSDK_NGX_Result TryEvaluateOptiFeature(ID3D12GraphicsCommandList* InCmdL
     }
 
     // Fallback to FSR 2.1.2 if feature failed to initialize and user didn't explicitly request it
+    if (FgOnly::Enabled && (feature == nullptr || !feature->IsInited()))
+    {
+        D3D12Hooks::SetRootSignatureTracking(true);
+        return NVSDK_NGX_Result_Fail;
+    }
     if (!feature->IsInited() && cfg.Dx12Upscaler.value_or_default() != Upscaler::FSR21)
     {
         LOG_WARN("Feature '{}' failed to initialize. Falling back to FSR 2.1.2", feature->Name());

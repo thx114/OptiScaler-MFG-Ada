@@ -15,52 +15,7 @@ namespace DlssNr::MenuSections
 
 void RenderInput(Config* config, float menuResScale)
 {
-    // Resolution changes rebuild model resources; commit only after releasing the slider.
-    static int pendingScale = -1;
-
-    int scalePercent =
-        pendingScale >= 0 ? pendingScale : (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
-
-    if (ImGui::SliderInt(I18n::Tr("Model resolution"), &scalePercent, 25, 200, "%d%%"))
-        pendingScale = scalePercent;
-
-    if (ImGui::IsItemDeactivatedAfterEdit() && pendingScale >= 0)
-    {
-        config->DlssNrWorkingScale = std::clamp(pendingScale, 25, 200) / 100.0f;
-        pendingScale = -1;
-    }
-
-    HelpMarker("50% halves width and height. 100% uses the full input size.");
-
-    // Refinement passes (pass 2+) can run at their own resolution. Unset follows the primary scale.
-    static int pendingLaterScale = -1;
-    bool separateLater = config->DlssNrLaterPassScale.has_value();
-    if (ImGui::Checkbox(I18n::Tr("Separate later-pass resolution"), &separateLater))
-    {
-        config->DlssNrLaterPassScale = separateLater
-                                          ? std::optional<float>(config->DlssNrWorkingScale.value_or_default())
-                                          : std::optional<float> {};
-        pendingLaterScale = -1;
-    }
-
-    if (separateLater)
-    {
-        int laterPercent = pendingLaterScale >= 0
-                               ? pendingLaterScale
-                               : (int) lroundf(config->DlssNrLaterPassScale.value() * 100.0f);
-
-        if (ImGui::SliderInt(I18n::Tr("Later pass resolution"), &laterPercent, 25, 200, "%d%%"))
-            pendingLaterScale = laterPercent;
-
-        if (ImGui::IsItemDeactivatedAfterEdit() && pendingLaterScale >= 0)
-        {
-            config->DlssNrLaterPassScale = std::clamp(pendingLaterScale, 25, 200) / 100.0f;
-            pendingLaterScale = -1;
-        }
-
-        HelpMarker("Resolution the refinement passes (pass 2 and up) run at. Lower than the first pass "
-                   "keeps the chain cheap; higher recovers detail.");
-    }
+    const int scalePercent = (int) lroundf(config->DlssNrWorkingScale.value_or_default() * 100.0f);
 
     if (scalePercent > 100)
     {

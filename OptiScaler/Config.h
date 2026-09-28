@@ -2,6 +2,7 @@
 
 #include "SysUtils.h"
 #include "State.h"
+#include "FgOnlyPolicy.h"
 
 #include <optional>
 #include <filesystem>
@@ -291,6 +292,7 @@ class Config
     // -1 means follow local structure, which is the model's own default. It is not a strength of zero.
     CustomOptional<float> DlssNrSkinStructure { -1.0f };
     CustomOptional<bool> DlssNrAutoMask { true };
+    CustomOptional<bool> DlssNrSkinIndependent { false };
     // Optional final-composition filter, not NVIDIA's semantic auto mask.
     CustomOptional<bool> DlssNrSkinProtection { false };
     CustomOptional<bool> DlssNrSkinToneEnabled { true };
@@ -403,7 +405,15 @@ class Config
 
     // When a pass chain changes working resolution between passes, the chained answer is resampled
     // and blended with this much of the encoded game frame (0 = chained answer only, 1 = game frame).
-    CustomOptional<float> DlssNrPassMerge { 0.5f };
+    CustomOptional<float> DlssNrPassMerge { 0.5f }; // legacy key; new chain uses per-pass model weights
+    CustomOptional<bool, NoDefault> DlssNrIndependentPassResolution;
+    struct NrPassChainOptions
+    {
+        CustomOptional<bool, NoDefault> enabled;
+        CustomOptional<float, NoDefault> scale;
+        CustomOptional<float, NoDefault> blend;
+    };
+    NrPassChainOptions DlssNrPassChain[30];
 
     // Filter used for NR supersampling (working scale > 1): the model runs above native, and this is
     // the downscaler that averages its answer back to native. Independent of OutputScalingDownscaler
@@ -916,9 +926,9 @@ class Config
     CustomOptional<int> FGDLSSGPausePresentGap { 3 };
     // Soft pause: Deactivate() stops dispatching but does NOT send sl::DLSSGMode::eOff to Streamline,
     // so Streamline keeps the NGX DLSS-G feature and its resources alive. Without this, every
-    // Deactivate (pause on stall, !FGEnabled flicker, fgChanged) makes Streamline release the feature,
+    // Transient Deactivate (pause on stall, fgChanged) makes Streamline release the feature,
     // and the next Activate rebuilds it via NVSDK_NGX_CreateFeature (~185ms hitch). With it, Activate
-    // just resumes the existing feature. Streamline still releases everything on sl::Shutdown.
+    // just resumes the existing feature. Explicit FG disable still sends eOff.
     CustomOptional<bool> FGDLSSGSoftPause { false };
 
     // As per

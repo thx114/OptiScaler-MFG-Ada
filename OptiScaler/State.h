@@ -190,6 +190,11 @@ class State
     bool fgPresentIsCalled = false;
     bool fgOnlyGenerated = false;
     bool fgHudlessCompare = false;
+    bool fgDepthDebug = false;
+    bool fgDepthDebugInvert = false;
+    bool fgDepthDebugEnhanced = true;
+    float fgDepthDebugGain = 1.0f;
+    bool fgDepthDebugAvailable = false;
     bool fgChanged = false;
     bool scChanged = false;
     bool skipHeapCapture = false;

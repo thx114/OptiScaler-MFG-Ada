@@ -296,7 +296,8 @@ void MenuCommon::UpdateManualInput(HWND targetHwnd)
         CheckShortcut(config->FGShortcutKey.value_or_default(), inputFG, "Menu key pressed, will be switching FG mode");
         CheckShortcut(config->FpsCycleShortcutKey.value_or_default(), inputFpsCycle,
                       "Menu key pressed, will be switching FPS mode");
-        CheckShortcut(config->DlssNrToggleKey.value_or_default(), inputDlssNr,
+        if constexpr (!FgOnly::Enabled)
+            CheckShortcut(config->DlssNrToggleKey.value_or_default(), inputDlssNr,
                       "Neural Rendering key pressed, will be toggling the pass");
     }
     else if (capturingKey)
@@ -481,6 +482,11 @@ void MenuCommon::GetCurrentBackendInfo(const API api, Upscaler& upscaler, std::s
 
 void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options)
 {
+    if constexpr (FgOnly::Enabled)
+    {
+        ImGui::TextUnformatted(I18n::Tr("Native DLSS (FG companion)"));
+        return;
+    }
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
 
     // Determine display name
@@ -1487,7 +1493,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
             config->ShowFps = !config->ShowFps.value_or_default();
         }
 
-        if (inputDlssNr)
+        if (inputDlssNr && !FgOnly::Enabled)
         {
             inputDlssNr = false;
             config->DlssNrEnabled = !config->DlssNrEnabled.value_or_default();
@@ -1540,7 +1546,7 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
 
                 _showMipmapCalcWindow = false;
                 _showHudlessWindow = false;
-                _showNrCenterWindow = false;
+                // Keep _showNrCenterWindow: the NR center should survive a menu close/reopen.
             }
 
             io.MouseDrawCursor = _isVisible;
@@ -1823,7 +1829,8 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
 
 void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 {
-    DlssNr::RenderNrCompareTags();
+    if constexpr (!FgOnly::Enabled)
+        DlssNr::RenderNrCompareTags();
 
 
     auto& state = ctx.state;
@@ -4150,6 +4157,23 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
     auto fgOutput = state.currentFG;
+
+    if (state.activeFgOutput == FGOutput::DLSSG)
+    {
+        ImGui::Checkbox(I18n::Tr("FG depth debug view"), &state.fgDepthDebug);
+        if (state.fgDepthDebug)
+        {
+            ImGui::Checkbox(I18n::Tr("Enhanced depth preview"), &state.fgDepthDebugEnhanced);
+            if (state.fgDepthDebugEnhanced)
+                ImGui::TextWrapped("%s", I18n::Tr("Depth: gray = nonzero (log scale), blue = exactly zero, yellow = exactly one, red = out of range, magenta = nonfinite. Colors refer to raw depth before inversion."));
+            ImGui::Checkbox(I18n::Tr("Invert depth preview"), &state.fgDepthDebugInvert);
+            ImGui::SliderFloat(I18n::Tr("Depth preview gain"), &state.fgDepthDebugGain,
+                               1.0f, 10000.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+            ImGui::TextWrapped("%s", I18n::Tr("Shows the depth actually tagged for FG, after flipping. Diagnostic view replaces the game image; turn it off for normal play."));
+            if (!state.fgDepthDebugAvailable)
+                ImGui::TextWrapped("%s", I18n::Tr("Waiting for an active FG depth resource."));
+        }
+    }
 
     const UiTargetMode uiTargetMode = getUiTargetMode();
     const bool outputIsHdr = uiTargetMode != UiTargetMode::SDR;
@@ -7434,12 +7458,37 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
         fpsOverlay.Render(config->FpsShortcutKey);
         fpsOverlayCycle.Render(config->FpsCycleShortcutKey);
         fgEnable.Render(config->FGShortcutKey);
-        dlssNrToggle.Render(config->DlssNrToggleKey);
+        if constexpr (!FgOnly::Enabled)
+            dlssNrToggle.Render(config->DlssNrToggleKey);
     }
 }
 
 void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 {
+    if constexpr (FgOnly::Enabled)
+    {
+        ImGui::SeparatorText(I18n::Tr("OptiScaler FG-only companion"));
+        ImGui::TextWrapped("%s", I18n::Tr("Native DLSS + frame generation. Neural rendering is handled by the external ReShade addon."));
+        ImGui::TextWrapped("%s", I18n::Tr("DX11: native DLSS with DX12 FG bridge. DX12: native DLSS and FG. No W12 upscaler."));
+        if (ImGui::Button(I18n::Tr("Rebuild DLSS input (external NR recovery)")))
+            ReInitUpscaler();
+        ShowTooltip(I18n::Tr("Recovery attempt after alt-tab: rebuilds DLSS and briefly pauses FG. External NR recovery still requires in-game verification."));
+        RenderActiveUpscalerSettings(ctx);
+        RenderFrameGenerationSelection(ctx);
+        RenderAdaMfgUnlock(ctx);
+        RenderFrameGenerationRuntimeSettings(ctx);
+        RenderFramerateSettings(ctx);
+#ifdef LOW_LATENCY_INPUTS
+        RenderLowLatencySettings(ctx);
+#else
+        RenderFakenvapiSettings(ctx);
+#endif
+        RenderLoggingSettings(ctx);
+        RenderThemeSettings(ctx);
+        RenderFpsOverlaySettings(ctx);
+        RenderKeybindSettings(ctx);
+        return;
+    }
     if (ImGui::BeginTable("main", 2, ImGuiTableFlags_SizingStretchSame))
     {
         ImGui::TableNextColumn();
@@ -7669,7 +7718,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
         _showMipmapCalcWindow = false;
         _showHudlessWindow = false;
-        _showNrCenterWindow = false;
+        // Keep _showNrCenterWindow: the NR center should survive a menu close/reopen.
         io.MouseDrawCursor = false;
         io.WantCaptureKeyboard = false;
         io.WantCaptureMouse = false;
@@ -7976,6 +8025,8 @@ void MenuCommon::RenderHudlessResourcesWindow(RenderMenuContext& ctx, ImGuiWindo
 
 void MenuCommon::RenderNrCenterWindow(RenderMenuContext& ctx, ImGuiWindowFlags flags)
 {
+    if constexpr (FgOnly::Enabled)
+        return;
     if (!_showNrCenterWindow)
         return;
 
@@ -8145,11 +8196,16 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }
 
-    // Chinese labels are much shorter than the English ones; keep the auto-resized window
-    // from collapsing so the settings and the bottom bar keep room to breathe.
+    // Chinese labels are much shorter than the English ones, so an auto-resized window would
+    // collapse into a narrow strip; floor its width at ~46 characters. The width is pinned
+    // (min == max): with a min-only floor the stretch-same settings table keeps refilling the
+    // extra horizontal space and the auto-resized window grows a little every frame until it
+    // spans the whole screen. Height stays content-driven.
     if (I18n::IsChinese())
-        ImGui::SetNextWindowSizeConstraints(ImVec2(46.0f * fontSize * ctx.menuResScale, 0.0f),
-                                            ImVec2(FLT_MAX, FLT_MAX));
+    {
+        const float widthFloor = std::min(46.0f * fontSize * ctx.menuResScale, ctx.io.DisplaySize.x * 0.85f);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(widthFloor, 0.0f), ImVec2(widthFloor, FLT_MAX));
+    }
 
     if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
     {
@@ -8484,7 +8540,7 @@ void MenuCommon::HideMenu()
 
     _showMipmapCalcWindow = false;
     _showHudlessWindow = false;
-    _showNrCenterWindow = false;
+    // Keep _showNrCenterWindow: the NR center should survive a menu close/reopen.
 
     io.MouseDrawCursor = _isVisible;
     io.WantCaptureKeyboard = _isVisible;

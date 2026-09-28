@@ -7,19 +7,20 @@
 #include <shaders/Shader_Dx12Utils.h>
 #include <shaders/Shader_Dx12.h>
 
-#define RF_NUM_OF_HEAPS 2
+#define RF_NUM_OF_HEAPS BUFFER_COUNT
 
 class RF_Dx12 : public Shader_Dx12
 {
   private:
     FrameDescriptorHeap _frameHeaps[RF_NUM_OF_HEAPS];
+    ID3D12Resource* _frameConstants[RF_NUM_OF_HEAPS] {};
 
     uint32_t InNumThreadsX = 16;
     uint32_t InNumThreadsY = 16;
 
   public:
     bool Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
-                  UINT64 width, UINT height, bool velocity);
+                  UINT64 width, UINT height, bool velocity, UINT frameSlot, D3D12_RESOURCE_STATES inputState);
 
     RF_Dx12(std::string InName, ID3D12Device* InDevice);
 

@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "DLSSG_Dx12.h"
+#include "DlssgPausePolicy.h"
 #include "Kcd2Hdr.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include "MfgUnlock.h"
@@ -356,9 +357,12 @@ void DLSSG_Dx12::Deactivate()
 {
     LOG_DEBUG("");
 
-    if (_isActive)
+    const bool keepAlive = DlssgPausePolicy::KeepRuntimeAlive(
+        Config::Instance()->FGDLSSGSoftPause.value_or_default(),
+        Config::Instance()->FGEnabled.value_or_default());
+    if (DlssgPausePolicy::NeedsDeactivate(_isActive, _runtimeNeedsDisable, keepAlive))
     {
-        if (Config::Instance()->FGDLSSGSoftPause.value_or_default())
+        if (keepAlive)
         {
             // Soft pause: stop dispatching but do NOT send sl::DLSSGMode::eOff. Sending eOff makes
             // Streamline's dlfgPresent release the entire NGX DLSS-G feature ("sl.dlss_g turned off,
@@ -368,13 +372,26 @@ void DLSSG_Dx12::Deactivate()
             // Streamline has no new frame data to interpolate on. Streamline still releases the feature
             // on sl::Shutdown (Shutdown() -> StreamlineProxy::Shutdown).
             LOG_DEBUG("Soft pause: retaining NGX DLSS-G feature (no eOff sent)");
+            _runtimeNeedsDisable = true;
         }
         else
         {
             sl::DLSSGOptions options {};
             options.mode = sl::DLSSGMode::eOff;
             options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
-            StreamlineProxy::DLSSGSetOptions()(viewport, options); // Potential crash point on exit
+            const auto result = StreamlineProxy::DLSSGSetOptions()(viewport, options);
+            _runtimeNeedsDisable = result != sl::Result::eOk;
+            if (!_runtimeNeedsDisable)
+            {
+                State::Instance().dlssgLastSetMode = sl::DLSSGMode::eOff;
+                State::Instance().dlssgDetectedInterpolationCount = 0;
+                ReflexHooks::setDlssgFrameCount(0);
+                LOG_INFO("DLSSG runtime disabled: FGEnabled {}, softPause {}, shuttingDown {}",
+                         Config::Instance()->FGEnabled.value_or_default(),
+                         Config::Instance()->FGDLSSGSoftPause.value_or_default(), State::Instance().isShuttingDown);
+            }
+            else
+                LOG_ERROR("Could not disable DLSSG runtime: {}; will retry", magic_enum::enum_name(result));
 
             sl::ReflexOptions reflexConst = {};
             reflexConst.mode = sl::ReflexMode::eOff;
@@ -807,6 +824,7 @@ void DLSSG_Dx12::ReleaseObjects()
 
     _renderUI.reset();
     _hudlessCompare.reset();
+    _depthDebug.reset();
     _mvFlip.reset();
     _depthFlip.reset();
 }
@@ -1012,6 +1030,35 @@ bool DLSSG_Dx12::Present()
         }
     }
 
+    auto& debugState = State::Instance();
+    debugState.fgDepthDebugAvailable = false;
+    if (debugState.fgDepthDebug && IsActive() && !IsPaused() && _swapChain != nullptr)
+    {
+        auto depth = GetResource(FG_ResourceType::Depth, fIndex);
+        Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain;
+        Microsoft::WRL::ComPtr<ID3D12Resource> target;
+        if (depth && SUCCEEDED(_swapChain->QueryInterface(IID_PPV_ARGS(&swapchain))) &&
+            SUCCEEDED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&target))))
+        {
+            auto cmd = GetUICommandList(fIndex);
+            if (_depthDebug == nullptr) _depthDebug = std::make_unique<FgDepthDebug>();
+            debugState.fgDepthDebugAvailable = _depthDebug->Draw(_device, cmd, fIndex, depth->GetResource(),
+                depth->state, target.Get(), static_cast<UINT>(depth->width), depth->height,
+                depth->left, depth->top, debugState.fgDepthDebugGain, debugState.fgDepthDebugInvert,
+                debugState.fgDepthDebugEnhanced);
+            static unsigned debugLogCounter = 0;
+            if (debugLogCounter++ % 120 == 0 && depth->GetResource())
+            {
+                const auto desc = depth->GetResource()->GetDesc();
+                LOG_INFO("FG depth preview: recorded={} slot={} resource={:X} format={} texture={}x{} extent={}x{} offset={},{} enhanced={} invert={} gain={}",
+                    debugState.fgDepthDebugAvailable, fIndex, reinterpret_cast<size_t>(depth->GetResource()),
+                    static_cast<unsigned>(desc.Format), desc.Width, desc.Height, depth->width, depth->height,
+                    depth->left, depth->top, debugState.fgDepthDebugEnhanced,
+                    debugState.fgDepthDebugInvert, debugState.fgDepthDebugGain);
+            }
+        }
+    }
+
     bool result = false;
 
     // if (IsActive() && !IsPaused())
@@ -1147,6 +1194,7 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
 
     auto fResource = &_frameResources[fIndex][type];
     fResource->type = type;
+    fResource->frameIndex = fIndex;
     fResource->state = inputResource->state;
     fResource->validity = inputResource->validity;
     fResource->resource = inputResource->resource;

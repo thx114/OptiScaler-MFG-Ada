@@ -27,6 +27,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
+    <OptiScalerFgOnly Condition="'$(OptiScalerFgOnly)'==''">true</OptiScalerFgOnly>
     <VCProjectVersion>16.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
     <ProjectGuid>{8d2b73fb-eecd-45ce-b8e5-335610462f58}</ProjectGuid>
@@ -317,6 +318,15 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
   <Target Name="ValidateRtx40MfgFlag" BeforeTargets="PrepareForBuild">
     <Error Condition="'$(OptiScalerRtx40Mfg)'!='true' and '$(OptiScalerRtx40Mfg)'!='false'"
            Text="OptiScalerRtx40Mfg must be true or false." />
+  </Target>
+  <ItemDefinitionGroup Condition="'$(OptiScalerFgOnly)'=='true'">
+    <ClCompile>
+      <PreprocessorDefinitions>OPTISCALER_FG_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <Target Name="ValidateFgOnlyFlag" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(OptiScalerFgOnly)'!='' and '$(OptiScalerFgOnly)'!='true' and '$(OptiScalerFgOnly)'!='false'"
+           Text="OptiScalerFgOnly must be true or false." />
   </Target>
   <ItemGroup>
     <ClCompile Include="dlssnr\DlssNr_CompatibilityRuntime.cpp" />

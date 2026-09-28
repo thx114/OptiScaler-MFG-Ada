@@ -1,12 +1,14 @@
 #pragma once
 
 #include <framegen/IFGFeature_Dx12.h>
+#include "FgDepthDebug.h"
 
 #include <proxies/Streamline_Proxy.h>
 
 class DLSSG_Dx12 : public virtual IFGFeature_Dx12
 {
   private:
+    std::unique_ptr<FgDepthDebug> _depthDebug;
     uint32_t _width = 0;
     uint32_t _height = 0;
     std::optional<bool> _haveHudless = std::nullopt;
@@ -37,6 +39,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     unsigned int _lastDlssgNumSent = 0;
     float _lastDlssgDynamicTargetSent = 0.0f;
     bool _dlssgOptionsValid = false;
+    bool _runtimeNeedsDisable = false; // Soft-paused runtime, or a failed eOff that needs retrying.
     uint64_t _dlssgOptionsSentAtPresent = 0;
 
     bool _lastReflexMarkersSent = false;

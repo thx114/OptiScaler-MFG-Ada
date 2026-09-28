@@ -694,6 +694,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
 
     LOG_ERROR("CreateFeature failed");
 
+    if constexpr (FgOnly::Enabled)
+        return NVSDK_NGX_Result_Fail;
+
     State::Instance().newBackend = Upscaler::FSR22;
     State::Instance().changeBackend[handleId] = true;
 
@@ -861,6 +864,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
         evalCounter = 0;
 
+        if (FgOnly::Enabled && !successfulPhase)
+            return NVSDK_NGX_Result_Fail;
         if (activeContext->changeBackendCounter != 0 || !successfulPhase)
         {
             return NVSDK_NGX_Result_Success;
@@ -908,6 +913,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
     }
 
     auto upscaler = deviceContext->GetUpscalerType();
+    if (FgOnly::Enabled && !upscaleResult)
+        return NVSDK_NGX_Result_Fail;
     if (!upscaleResult && !deviceContext->IsInited() &&
         (upscaler == Upscaler::XeSS || upscaler == Upscaler::XeSS_on12 || upscaler == Upscaler::DLSS ||
          upscaler == Upscaler::FFX_on12))

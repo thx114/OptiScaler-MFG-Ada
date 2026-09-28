@@ -3,8 +3,8 @@
 
 DlssNr::Proxy::Settings DlssNr_Dx12::State::ModelSettings(const Config& cfg, unsigned int pass)
 {
-    const auto tuning = PassTuning(cfg, pass);
-    return { PassPreset(cfg, pass), PassStyle(cfg, pass), tuning.intensity, tuning.structure,
+    const auto tuning = PassTuning(cfg, passChain.passes[pass].logical);
+    return { PassPreset(cfg, passChain.passes[pass].logical), PassStyle(cfg, passChain.passes[pass].logical), tuning.intensity, tuning.structure,
              tuning.tone, tuning.skin, tuning.autoMask };
 }
 
@@ -17,17 +17,17 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
     const auto width = native.width, height = native.height;
     const auto workWidth = work.width, workHeight = work.height;
     const auto laterWorkWidth = laterWork.width, laterWorkHeight = laterWork.height;
-    // The ping-pong and clamp rasters serve every pass, so they must hold the larger of the two
-    // working sizes; a given frame's dispatch only touches the region its pass uses.
-    const auto passWidth = std::max(workWidth, laterWorkWidth);
-    const auto passHeight = std::max(workHeight, laterWorkHeight);
+    // Shared rasters must fit every enabled layer, including a middle layer larger than both endpoints.
+    const auto passWidth = passChain.maxWidth;
+    const auto passHeight = passChain.maxHeight;
     const bool cropColor = frame.BeforeUpscale && (width != desc.Width || height != desc.Height);
     const bool reduced = workWidth != width || workHeight != height;
     ReleaseSurfacesIfFormatChanged(desc.Format);
 
     const bool resolutionChanged =
         nr.width != width || nr.height != height || nr.workWidth != workWidth || nr.workHeight != workHeight ||
-        nr.laterWorkWidth != laterWorkWidth || nr.laterWorkHeight != laterWorkHeight;
+        nr.laterWorkWidth != laterWorkWidth || nr.laterWorkHeight != laterWorkHeight ||
+        !passChain.SameLayout(preparedPassChain);
     const bool placementChanged = nr.width != 0 && (nr.beforeUpscale != frame.BeforeUpscale ||
                                                     nr.rayReconstruction != frame.RayReconstruction);
 
@@ -76,6 +76,16 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
         }
     }
 
+    for (unsigned pass = 0; pass < passChain.count; ++pass)
+        if (preparedPassChain.passes[pass].blend != passChain.passes[pass].blend)
+            nr.reset = true;
+    if (!passChain.SameLayout(preparedPassChain))
+        for (unsigned pass = 0; pass < passChain.count; ++pass)
+            LOG_INFO("DLSS-NR active chain: slot {}, logical pass {}, {}x{}, model contribution {}%",
+                     pass, passChain.passes[pass].logical + 1, passChain.passes[pass].width,
+                     passChain.passes[pass].height, passChain.passes[pass].blend * 100.0f);
+    preparedPassChain = passChain;
+
     if (nr.output == nullptr)
     {
         nr.output = CreateScratch(device, desc.Format, passWidth, passHeight);
@@ -102,15 +112,10 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
         return false;
     }
 
-    if (requestedPasses == 1)
-    {
-        // Reclaim the extra raster and clear its failure latch. Raising the count later gets one fresh
-        // allocation attempt; holding a failing allocation at two must not retry it every frame.
-        ParkNrResource(nr.passScratch);
-        ParkNrResource(nr.passClamp);
-        nr.passScratchFailed = false;
-    }
-    else if (nr.passScratch == nullptr && !nr.passScratchFailed)
+    bool needsBlendRaster = requestedPasses > 1;
+    for (unsigned pass = 0; pass < requestedPasses; ++pass)
+        needsBlendRaster |= passChain.passes[pass].blend < 1.0f;
+    if (needsBlendRaster && nr.passScratch == nullptr && !nr.passScratchFailed)
     {
         nr.passScratch = CreateScratch(device, desc.Format, passWidth, passHeight);
         nr.passClamp = CreateScratch(device, desc.Format, passWidth, passHeight);
@@ -184,9 +189,9 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
         if (nr.passCreateFailed[pass])
             break;
         bool ready = false;
-        // Pass 0 runs at the primary working size; refinement passes run at the later-pass size.
-        const auto passResWidth = pass == 0 ? workWidth : laterWorkWidth;
-        const auto passResHeight = pass == 0 ? workHeight : laterWorkHeight;
+        // Physical model slots follow the active chain; settings keep the original logical pass identity.
+        const auto passResWidth = passChain.passes[pass].width;
+        const auto passResHeight = passChain.passes[pass].height;
         const auto prepared = nr.models[pass].Prepare(cmdList, device, passResWidth, passResHeight, ModelSettings(cfg, pass),
                                                       frame.SubmissionEpoch, &ready);
         if (prepared != NVSDK_NGX_Result_Success)
@@ -209,9 +214,9 @@ bool DlssNr_Dx12::State::PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID
                       frame.BeforeUpscale ? "true" : "false");
                 return false;
         }
-        nr.builtPreset[pass] = PassPreset(cfg, pass);
-        nr.builtPassTuning[pass] = PassTuning(cfg, pass);
-        nr.builtStyle[pass] = PassStyle(cfg, pass);
+        nr.builtPreset[pass] = PassPreset(cfg, passChain.passes[pass].logical);
+        nr.builtPassTuning[pass] = PassTuning(cfg, passChain.passes[pass].logical);
+        nr.builtStyle[pass] = PassStyle(cfg, passChain.passes[pass].logical);
         if (!ready)
         {
                 return false;
@@ -277,8 +282,8 @@ auto DlssNr_Dx12::State::TuningMatchesFeature(const Config& cfg, unsigned int re
         if (!nr.models[pass].HasFeature())
             continue;
 
-        if (nr.builtPassTuning[pass] != PassTuning(cfg, pass) || nr.builtPreset[pass] != PassPreset(cfg, pass) ||
-            nr.builtStyle[pass] != PassStyle(cfg, pass))
+        if (nr.builtPassTuning[pass] != PassTuning(cfg, passChain.passes[pass].logical) || nr.builtPreset[pass] != PassPreset(cfg, passChain.passes[pass].logical) ||
+            nr.builtStyle[pass] != PassStyle(cfg, passChain.passes[pass].logical))
             return false;
     }
 

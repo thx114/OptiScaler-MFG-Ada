@@ -35,7 +35,16 @@ cbuffer Params : register(b0)
     float gSkinColour;
     float gEnvironmentDetail;
     float gEnvironmentColour;
-    float gClampMerge;     // resampled pass chains: blend this much of the encoded game frame back in
+    // Preserve the residual shader slots: subsequent offsets must match DlssNrConstants.
+    float gResidualBlend;
+    uint  gResidualHistoryValid;
+    uint  gResidualMotionBaseX;
+    uint  gResidualMotionBaseY;
+    float gClampMerge;     // clamp/blend mode: contribution of this layer's input (gOriginal)
+    uint  gSourceContentWidth;  // gSource's valid region; 0 = use GetDimensions (non-multipass paths)
+    uint  gSourceContentHeight;
+    uint  gModelContentWidth;   // gModel's valid region; 0 = use GetDimensions
+    uint  gModelContentHeight;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -555,24 +564,45 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         // A chain whose passes run at different working resolutions resamples the previous answer
         // onto this pass's grid, and can blend the encoded game frame back in so detail a cheap
         // low-resolution first pass lost survives into the refinement pass.
-        uint srcW = 0, srcH = 0;
-        gSource.GetDimensions(srcW, srcH);
+        uint srcW = gSourceContentWidth, srcH = gSourceContentHeight;
+        uint srcTexW = 0, srcTexH = 0;
+        gSource.GetDimensions(srcTexW, srcTexH);
+        if (srcW == 0 || srcH == 0)
+        {
+            srcW = srcTexW;
+            srcH = srcTexH;
+        }
         float4 raw;
-        float2 uv = 0.0;
+        float2 uv = (id.xy + 0.5) / float2(gWidth, gHeight);
         const bool resample = srcW != gWidth || srcH != gHeight;
         if (resample)
         {
             uv = (id.xy + 0.5) / float2(gWidth, gHeight);
-            raw = gSource.SampleLevel(gLinear, uv, 0);
+            // The chain rasters are allocated at max(work, later): when this pass's answer
+            // occupies only part of the texture, sample that region rather than the whole
+            // allocation. The encoded game frame (gOriginal) has no padding, so the merge
+            // below keeps the unscaled full-frame uv for it.
+            float2 srcUv = uv;
+            if (srcW != srcTexW || srcH != srcTexH)
+                srcUv *= float2((float) srcW / (float) srcTexW, (float) srcH / (float) srcTexH);
+            srcUv = clamp(srcUv, 0.5 / float2(srcTexW, srcTexH),
+                          (float2(srcW, srcH) - 0.5) / float2(srcTexW, srcTexH));
+            raw = gSource.SampleLevel(gLinear, srcUv, 0);
         }
         else
         {
             raw = gSource.Load(int3(id.xy, 0));
         }
         float3 restored = saturate(SanitizeFinite3(raw.rgb, 0.5));
-        if (resample && gClampMerge > 0.0)
+        if (gClampMerge > 0.0)
         {
-            const float3 game = gOriginal.SampleLevel(gLinear, uv, 0).rgb;
+            uint baseW, baseH;
+            gOriginal.GetDimensions(baseW, baseH);
+            const float2 content = float2(gModelContentWidth > 0 ? gModelContentWidth : baseW,
+                                          gModelContentHeight > 0 ? gModelContentHeight : baseH);
+            // gOriginal is this layer's input, which may occupy a subrectangle of the chain raster.
+            const float2 basePixel = clamp(uv * content, 0.5, max(0.5, content - 0.5));
+            const float3 game = gOriginal.SampleLevel(gLinear, basePixel / float2(baseW, baseH), 0).rgb;
             restored = saturate(lerp(restored, game, saturate(gClampMerge)));
         }
         gTarget[id.xy] = float4(restored, raw.a);
@@ -835,7 +865,20 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // Sampled rather than loaded: when the model ran at a reduced resolution these are smaller than the
     // frame, and its edit is enlarged here while the frame underneath stays untouched.
     float4 proxySample = gSource.SampleLevel(gLinear, cmpUv, 0);
-    float4 modelSample = gModel.SampleLevel(gLinear, cmpUv, 0);
+    // The answer's raster is shared at max(work, later) but only the last pass's region is this
+    // frame's content; sampling the whole texture would stretch a small answer across the frame.
+    uint modelTexW = 0, modelTexH = 0;
+    gModel.GetDimensions(modelTexW, modelTexH);
+    float2 modelUv = cmpUv;
+    if (gModelContentWidth != 0 && gModelContentHeight != 0 &&
+        (gModelContentWidth != modelTexW || gModelContentHeight != modelTexH))
+    {
+        modelUv = cmpUv * float2((float) gModelContentWidth / (float) modelTexW,
+                                 (float) gModelContentHeight / (float) modelTexH);
+        modelUv = clamp(modelUv, 0.5 / float2(modelTexW, modelTexH),
+                        (float2(gModelContentWidth, gModelContentHeight) - 0.5) / float2(modelTexW, modelTexH));
+    }
+    float4 modelSample = gModel.SampleLevel(gLinear, modelUv, 0);
 
     // Nothing was encoded on the way in, so nothing is decoded here either.
     float3 proxy = gPassthrough != 0 ? proxySample.rgb : SrgbToLinear(proxySample.rgb);

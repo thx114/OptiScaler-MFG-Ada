@@ -7,6 +7,9 @@
 #include "State.h"
 #include <dlssnr/DlssNr_ExposureScan.h>
 #include <dlssnr/DlssNr_Pipeline_Dx12.h>
+#include <dlssnr/DlssNr_DlaaPassthrough.h>
+#include <dlssnr/DlssNr_Placement.h>
+#include <shaders/dlssnr/DlssNr_ActiveColor.h>
 
 void IFeature_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                                     D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const
@@ -128,7 +131,9 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
         useRcas = true;
     }
 
-    if (!RCAS->IsInit())
+    // Native DLSS can auto-enable RCAS from the game's sharpness even with RcasEnabled=false.
+    // The companion leaves that parameter to DLSS; never append our own sharpening pass.
+    if (FgOnly::Enabled || !RCAS->IsInit())
         useRcas = false;
 
     bool useOutputScaling =
@@ -186,6 +191,7 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
               } });
     }
 
+    bool rcasScheduled = false;
     _actualSharpness = _sharpness;
     if (useRcas)
     {
@@ -200,6 +206,7 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
                   if (RCAS->CreateBufferResource(Device, nextOutput, D3D12_RESOURCE_STATE_UNORDERED_ACCESS))
                   {
                       RCAS->SetBufferState(InCommandList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                      rcasScheduled = RCAS->CanRender() && paramMotion && paramOutput;
                       return RCAS->Buffer();
                   }
                   return nullptr;
@@ -325,7 +332,66 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
                                          rayReconstruction, edited != originalColor);
     }
     UpscalerTime->Start(InCommandList);
-    const bool evalResult = EvaluateInternal(InCommandList, InParameters);
+    bool copiedDlaa = false;
+    const auto& nrConfig = *Config::Instance();
+    const auto nrPlacement = DlssNr::ResolvePlacement(
+        nrConfig.DlssNrRunBeforeSr.value_or_default(), nrConfig.DlssNrDeferredDlss.value_or_default(),
+        nrConfig.DlssNrResidualAcrossRr.value_or_default(), nrConfig.DlssNrFinishedPicture.value_or_default());
+    const bool nrBridgeCandidate = interop &&
+        State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+        upscaler == Upscaler::DLSS && nrConfig.DlssNrEnabled.value_or_default() &&
+        nrPlacement.finished && !nrPlacement.deferred;
+    unsigned renderW = RenderWidth(), renderH = RenderHeight();
+    if (nrBridgeCandidate)
+        GetRenderResolution(InParameters, &renderW, &renderH);
+    if (DlssNr::UseDlaaPassthrough(
+            nrBridgeCandidate,
+            upscaler == Upscaler::DLSS,
+            nrConfig.DlssNrEnabled.value_or_default() && !nrConfig.DlssNrHoldFrame.value_or_default(),
+            nrPlacement.finished, nrPlacement.deferred, rayReconstruction,
+            rcasScheduled || _actualSharpness.value_or(_sharpness) == 0.0f,
+            renderW, renderH, TargetWidth(), TargetHeight()) && originalColor && currentTarget &&
+        originalColor != currentTarget)
+    {
+        unsigned srcX = 0, srcY = 0, dstX = 0, dstY = 0;
+        InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_X, &srcX);
+        InParameters->Get(NVSDK_NGX_Parameter_DLSS_Input_Color_Subrect_Base_Y, &srcY);
+        InParameters->Get(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_X, &dstX);
+        InParameters->Get(NVSDK_NGX_Parameter_DLSS_Output_Subrect_Base_Y, &dstY);
+        if (DlssNr::CanCopyDlaaColor(originalColor->GetDesc(), currentTarget->GetDesc(),
+                                    renderW, renderH, srcX, srcY, dstX, dstY))
+        {
+            // Shared DX11 resources enter/leave in COMMON. A pipeline intermediate is in UAV.
+            // Pre-SR/deferred NR and held-input paths are excluded above.
+            const auto targetState = currentTarget == paramOutput ? D3D12_RESOURCE_STATE_COMMON
+                                                                 : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            ResourceBarrier(InCommandList, originalColor, D3D12_RESOURCE_STATE_COMMON,
+                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+            ResourceBarrier(InCommandList, currentTarget, targetState, D3D12_RESOURCE_STATE_COPY_DEST);
+            DlssNr::CopyActiveColor(InCommandList, currentTarget, originalColor, { renderW, renderH });
+            ResourceBarrier(InCommandList, currentTarget, D3D12_RESOURCE_STATE_COPY_DEST, targetState);
+            ResourceBarrier(InCommandList, originalColor, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                            D3D12_RESOURCE_STATE_COMMON);
+            copiedDlaa = true;
+            ++_frameCount;
+        }
+    }
+    // SR history was not advanced while bypassed. Reset once when real DLSS resumes.
+    unsigned previousReset = 0;
+    if (nrDlaaPassthroughActive && !copiedDlaa)
+    {
+        InParameters->Get(NVSDK_NGX_Parameter_Reset, &previousReset);
+        InParameters->Set(NVSDK_NGX_Parameter_Reset, 1u);
+    }
+    const bool evalResult = copiedDlaa || EvaluateInternal(InCommandList, InParameters);
+    if (nrDlaaPassthroughActive && !copiedDlaa)
+        InParameters->Set(NVSDK_NGX_Parameter_Reset, previousReset);
+    if (copiedDlaa != nrDlaaPassthroughActive)
+        LOG_INFO("NR DLAA SR-only bypass: {} ({}x{}, sharpening flag {}, RCAS {}); NR guide capture and output pipeline retained",
+                 copiedDlaa, renderW, renderH, SharpenEnabled(), rcasScheduled);
+    // If returning to SR failed, keep the reset pending for the next attempt.
+    if (evalResult)
+        nrDlaaPassthroughActive = copiedDlaa;
     UpscalerTime->End(InCommandList);
     if (diagnoseNr)
         NeuralRendering->DiagnosePipeline(2, InCommandList, InParameters, currentTarget, GetFeatureFlags(),

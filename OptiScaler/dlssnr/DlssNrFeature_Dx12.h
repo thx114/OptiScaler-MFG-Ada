@@ -16,6 +16,8 @@ inline constexpr unsigned int DefaultMaxPassCount = 5;
 std::string FinishedPictureStatus();
 bool WaitForFinishedPicture();
 void FinishedPictureResetCommandList(ID3D12CommandList* cmd);
+// Two-phase notification around the bridge's D3D12 Signal -> DX11 Wait.
+void FinishedPictureDx11Handoff(ID3D12CommandQueue* queue, bool commit);
 void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
 void ApplyToFinishedPicture(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue);
 // Dx11wDx12SC::Present hand-off, before the FG swapchain's own Present.

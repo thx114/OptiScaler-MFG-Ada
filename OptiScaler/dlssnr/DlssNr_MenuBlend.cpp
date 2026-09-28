@@ -69,6 +69,7 @@ void RenderBlend(Config* config, float menuResScale)
         bool preview = config->DlssNrShowSkinMask.value_or_default();
         if (ImGui::Checkbox(I18n::Tr("Preview colour-based mask"), &preview))
             config->DlssNrShowSkinMask = preview;
+HelpMarker(I18n::Tr("This previews a colour selection from the original game picture, not the model Character mask. White is selected; grey is partial. Pale skin or coloured lighting may be missed."));
         ImGui::EndDisabled();
         ImGui::TreePop();
     }

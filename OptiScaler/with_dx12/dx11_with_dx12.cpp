@@ -2,6 +2,7 @@
 
 #include "dx11_with_dx12.h"
 #include "with_dx12.h"
+#include <dlssnr/DlssNrFeature_Dx12.h>
 
 #define ASSIGN_DESC(dest, src)                                                                                         \
     dest.Width = src.Width;                                                                                            \
@@ -246,6 +247,14 @@ bool Dx11WithDx12::SyncDx12ToDx11()
 
     const auto fenceValue = TextureCopyFenceValue++;
 
+    // Only snapshots already-submitted NR inputs. Later submissions are not covered
+    // by this signal. On either failure below no handoff proof is committed.
+    const auto& cfg = *Config::Instance();
+    const bool trackNrHandoff = cfg.DlssNrEnabled.value_or_default() &&
+                                cfg.DlssNrFinishedPicture.value_or_default() &&
+                                !cfg.FGEnabled.value_or_default() && !State::Instance().externalFrameGeneration;
+    if (trackNrHandoff)
+        DlssNr::FinishedPictureDx11Handoff(Dx12CommandQueue, false);
     auto result = Dx12CommandQueue->Signal(Dx12FenceTextureCopy, fenceValue);
     if (result != S_OK)
     {
@@ -262,6 +271,8 @@ bool Dx11WithDx12::SyncDx12ToDx11()
         return false;
     }
 
+    if (trackNrHandoff)
+        DlssNr::FinishedPictureDx11Handoff(Dx12CommandQueue, true);
     return true;
 }
 

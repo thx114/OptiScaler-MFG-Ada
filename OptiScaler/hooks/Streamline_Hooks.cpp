@@ -393,7 +393,14 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
         return o_slSetTag(viewport, tags, numTags, cmdBuffer);
     }
 
-    if (State::Instance().activeFgInput == FGInput::DLSSG &&
+    // ZZZ sends a depth+MV-only tag for DLSS before its HUDless tag.  The
+    // quirk avoids treating that pair as FG input for the FSR/XeFG paths, but
+    // native DLSSG still needs those resources to dispatch.  Do not apply the
+    // filter when DLSSG is the selected output, otherwise every dispatch sees
+    // "Depth or Velocity is not ready" and FG falls back to pass-through.
+    const bool nativeDlssg = State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
+                              State::Instance().activeFgOutput == FGOutput::DLSSG;
+    if (!nativeDlssg && State::Instance().activeFgInput == FGInput::DLSSG &&
         State::Instance().gameQuirks[GameQuirk::IgnoreTagsWithoutHudlessForFG])
     {
         bool hasDepth = false;
@@ -484,7 +491,11 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
 
     LOG_DEBUG("frameIndex: {}", static_cast<uint32_t>(frame));
 
-    if (State::Instance().activeFgInput == FGInput::DLSSG &&
+    // See the matching hkslSetTag guard above.  Keep the ZZZ workaround for
+    // non-DLSSG outputs, but allow native DLSSG to capture depth and MVs.
+    const bool nativeDlssg = State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
+                              State::Instance().activeFgOutput == FGOutput::DLSSG;
+    if (!nativeDlssg && State::Instance().activeFgInput == FGInput::DLSSG &&
         State::Instance().gameQuirks[GameQuirk::IgnoreTagsWithoutHudlessForFG])
     {
         bool hasDepth = false;

@@ -1,5 +1,6 @@
 #pragma once
 #include <Config.h>
+#include "DlssNr_SkinPolicy.h"
 #include <algorithm>
 #include <cmath>
 
@@ -93,6 +94,8 @@ inline NrPassTuning PassTuning(const Config& cfg, unsigned int pass)
     result.structure = bounded(result.structure, 1.0f, 0.0f);
     result.tone = bounded(result.tone, pass == 0 ? 1.0f : 0.0f, 0.0f);
     result.skin = bounded(result.skin, -1.0f, -1.0f);
+    result.structure = DlssNr::SkinIndependentStructure(
+        result.structure, result.autoMask, cfg.DlssNrSkinIndependent.value_or_default());
     return result;
 }
 }

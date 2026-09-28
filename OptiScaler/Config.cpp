@@ -465,6 +465,15 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrLaterPassScale.set_from_config(readFloat("DlssNr", "LaterPassScale"));
             DlssNrPassMerge.set_from_config(readFloat("DlssNr", "PassMerge"));
+            DlssNrIndependentPassResolution.set_from_config(readBool("DlssNr", "IndependentPassResolution"));
+            for (unsigned pass = 0; pass < 30; ++pass)
+            {
+                const auto key = "Pass" + std::to_string(pass + 1);
+                DlssNrPassChain[pass].enabled.set_from_config(readBool("DlssNr", (key + "Enabled").c_str()));
+                if (pass != 0) // Pass 1 keeps the existing WorkingScale key.
+                    DlssNrPassChain[pass].scale.set_from_config(readFloat("DlssNr", (key + "Resolution").c_str()));
+                DlssNrPassChain[pass].blend.set_from_config(readFloat("DlssNr", (key + "Blend").c_str()));
+            }
 
             if (auto v = readEnum<Scaler>("DlssNr", "ScalingDownscaler"))
                 DlssNrScalingDownscaler.set_from_config(*v);
@@ -499,6 +508,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
             DlssNrSkinStructure.set_from_config(readFloat("DlssNr", "SkinStructure"));
             DlssNrAutoMask.set_from_config(readBool("DlssNr", "AutoMask"));
+            DlssNrSkinIndependent.set_from_config(readBool("DlssNr", "SkinIndependent"));
             DlssNrSkinProtection.set_from_config(readBool("DlssNr", "SkinProtection"));
             DlssNrSkinToneEnabled.set_from_config(readBool("DlssNr", "SkinToneEnabled"));
             DlssNrSkinDetail.set_from_config(readFloat("DlssNr", "SkinDetail"));
@@ -1015,9 +1025,13 @@ bool Config::Reload(std::filesystem::path iniPath)
             _DONTUSE_Fsr4ForceEnableInt8.set_from_config(readBool("FSR", "Fsr4ForceEnableInt8"));
         }
 
+        FgOnly::Apply(*this, Upscaler::DLSS);
+        if constexpr (FgOnly::Enabled)
+            LOG_INFO("FG-only companion v1: native DX11/DX12 DLSS + FG; internal NR and post-processing disabled");
         return true;
     }
 
+    FgOnly::Apply(*this, Upscaler::DLSS);
     return false;
 }
 
@@ -1432,6 +1446,16 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "WorkingScale", GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "LaterPassScale", GetFloatValue(Instance()->DlssNrLaterPassScale.value_for_config()).c_str());
     ini.SetValue("DlssNr", "PassMerge", GetFloatValue(Instance()->DlssNrPassMerge.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "IndependentPassResolution", GetBoolValue(Instance()->DlssNrIndependentPassResolution.value_for_config()).c_str());
+    for (unsigned pass = 0; pass < 30; ++pass)
+    {
+        const auto key = "Pass" + std::to_string(pass + 1);
+        auto& options = Instance()->DlssNrPassChain[pass];
+        ini.SetValue("DlssNr", (key + "Enabled").c_str(), GetBoolValue(options.enabled.value_for_config()).c_str());
+        if (pass != 0)
+            ini.SetValue("DlssNr", (key + "Resolution").c_str(), GetFloatValue(options.scale.value_for_config()).c_str());
+        ini.SetValue("DlssNr", (key + "Blend").c_str(), GetFloatValue(options.blend.value_for_config()).c_str());
+    }
     ini.SetValue("DlssNr", "ScalingDownscaler", GetIntValue(Instance()->DlssNrScalingDownscaler).c_str());
     ini.SetValue("DlssNr", "AutoCapture", GetBoolValue(Instance()->DlssNrAutoCapture.value_for_config()).c_str());
 
@@ -1468,6 +1492,7 @@ bool Config::SaveIni()
     ini.SetValue("DlssNr", "SkinStructure",
                  GetFloatValue(Instance()->DlssNrSkinStructure.value_for_config()).c_str());
     ini.SetValue("DlssNr", "AutoMask", GetBoolValue(Instance()->DlssNrAutoMask.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "SkinIndependent", GetBoolValue(Instance()->DlssNrSkinIndependent.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SkinProtection", GetBoolValue(Instance()->DlssNrSkinProtection.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SkinToneEnabled", GetBoolValue(Instance()->DlssNrSkinToneEnabled.value_for_config()).c_str());
     ini.SetValue("DlssNr", "SkinDetail", GetFloatValue(Instance()->DlssNrSkinDetail.value_for_config()).c_str());

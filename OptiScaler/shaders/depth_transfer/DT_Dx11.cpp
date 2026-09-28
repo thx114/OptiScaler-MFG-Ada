@@ -2,6 +2,7 @@
 #include "DT_Dx11.h"
 
 #include "DT_Common.h"
+#include "DepthTransferBindings.h"
 #include "../Shader_Common.h"
 #include "precompile/dt_dx11_Shader_Dx11.h"
 
@@ -41,10 +42,26 @@ bool DepthTransfer_Dx11::Dispatch(ID3D11Device* InDevice, ID3D11DeviceContext* I
     if (!InitializeViews(InResource, OutResource))
         return false;
 
+    DepthTransferBindings bindings(InContext, InResource);
+    if (bindings.DetachedDepth())
+    {
+        static unsigned conflictCount = 0;
+        if (conflictCount++ % 240 == 0)
+            LOG_INFO("FG depth transfer: detached overlapping game DSV before SRV read (count={})", conflictCount);
+    }
+
     // Set the compute shader and resources
     InContext->CSSetShader(_computeShader, nullptr, 0);
     InContext->CSSetShaderResources(0, 1, &_srvInput);
     InContext->CSSetUnorderedAccessViews(0, 1, &_uavOutput, nullptr);
+
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> actualSrv;
+    InContext->CSGetShaderResources(0, 1, &actualSrv);
+    if (!actualSrv)
+    {
+        LOG_ERROR("FG depth transfer: depth SRV binding rejected; refusing zero-depth dispatch");
+        return false;
+    }
 
     UINT dispatchWidth = 0;
     UINT dispatchHeight = 0;

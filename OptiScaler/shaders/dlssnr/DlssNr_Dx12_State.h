@@ -1,7 +1,9 @@
 #pragma once
 #include "DlssNr_Dx12_ModelState.h"
+#include <dlssnr/DlssNr_FinishedActivity.h>
 #include <dlssnr/DlssNr_Placement.h>
 #include <dlssnr/DlssNr_FinishedReady.h>
+#include <dlssnr/DlssNr_PassChain.h>
 #include <dlssnr/PassProfiles.h>
 
 #include <set>
@@ -59,6 +61,21 @@ struct DlssNr_Dx12::State
 
     using NrState = DlssNr::Detail::ModelStateDx12;
     NrState nr;
+    DlssNr::PassChain passChain, preparedPassChain;
+    DlssNr::PassChain ResolvePassChain(const Config& cfg, unsigned count, unsigned width, unsigned height)
+    {
+        std::array<DlssNr::ChainSetting, DlssNr::ChainCapacity> settings;
+        const bool independent = cfg.DlssNrIndependentPassResolution.value_or(cfg.DlssNrLaterPassScale.has_value());
+        for (unsigned i = 0; i < DlssNr::ChainCapacity; ++i)
+        {
+            const auto& options = cfg.DlssNrPassChain[i];
+            const float primary = cfg.DlssNrWorkingScale.value_or_default();
+            settings[i] = { options.enabled.value_or(true),
+                i == 0 || !independent ? primary : options.scale.value_or(cfg.DlssNrLaterPassScale.value_or(primary)),
+                options.blend.value_or(1.0f) };
+        }
+        return DlssNr::BuildPassChain(settings, count, width, height);
+    }
     DlssNr_Dx12& shader;
     struct Enlarger
     {
@@ -384,6 +401,7 @@ struct DlssNr_Dx12::State
             ID3D12CommandList* producer = nullptr; // identity only; never dereferenced
             DlssNrFrameInfo frame {};
             uint64_t ready = 0, done = 0, serial = 0;
+            DlssNr::FinishedBridgeHandoff bridgeHandoff;
             bool pending = false, submitted = false, residualOnly = false, sceneLinear = true;
         };
         std::array<Slot, 4> slots;
@@ -401,7 +419,19 @@ struct DlssNr_Dx12::State
         bool reportedQueueDelay = false;
         Slot* heldSlot = nullptr;
         uint64_t heldSlotSerial = 0;
+        // Last successfully finished NR picture. Replayed when the current frame's
+        // cross-queue input is still in flight, so presentation never alternates
+        // between processed and raw frames.
+        ComPtr<ID3D12Resource> fallbackFinished;
+        ComPtr<ID3D12CommandAllocator> fallbackAllocator;
+        ComPtr<ID3D12GraphicsCommandList> fallbackCommands;
+        ComPtr<ID3D12Fence> fallbackFence;
+        uint64_t fallbackDone = 0;
+        D3D12_RESOURCE_STATES fallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        bool fallbackValid = false;
+        DlssNr::FinishedInputActivity activity;
         uint64_t serial = 0, successes = 0;
+        uint64_t scheduleCalls = 0, scheduleOrdered = 0, scheduleFresh = 0, scheduleReplay = 0, scheduleFull = 0;
         std::string status = "Waiting for a finished picture.";
         bool reset = true;
         std::atomic<bool> tracking { false };
@@ -443,7 +473,7 @@ struct DlssNr_Dx12::State
     void ApplyToFinishedPictureDx11(IDXGISwapChain* swapchain);
 
     bool ApplyFinishedColor(ID3D12Resource* color, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE colorSpace,
-                            bool gameFrameHandoff = false);
+                            bool gameFrameHandoff = false, bool dx11CopyOrdered = false);
 
     DlssNr::Proxy::Settings ModelSettings(const Config& cfg, unsigned int pass);
     bool PrepareRunModels(ID3D12GraphicsCommandList* cmdList, ID3D12Device* device,

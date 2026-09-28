@@ -16,7 +16,7 @@ void DLSSFeature::ProcessEvaluateParams(NVSDK_NGX_Parameter* InParameters)
         InParameters->Set(NVSDK_NGX_Parameter_Sharpness, sharpness);
     }
     // rcas enabled
-    else
+    else if (!FgOnly::Enabled)
     {
         InParameters->Set(NVSDK_NGX_Parameter_Sharpness, 0.0f);
     }

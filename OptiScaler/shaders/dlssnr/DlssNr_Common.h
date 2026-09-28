@@ -233,7 +233,7 @@ struct alignas(256) DlssNrConstants
     float EnvironmentColour;
 
     // ResidualAcrossRR v2 only (dlssnr_residual.hlsl). History blend rate for the MV-reprojected
-    // accumulator, 0..1. Read only by that separate shader; dlssnr.hlsl never declares it. Appended
+    // accumulator, 0..1. Read only by that separate shader; dlssnr.hlsl reserves the same slots. Appended
     // here rather than in a new struct so DispatchResidualPass reuses the existing constant upload --
     // it lands inside the 256-byte alignas padding, so sizeof(DlssNrConstants) is unchanged.
     float ResidualBlend;
@@ -246,8 +246,24 @@ struct alignas(256) DlssNrConstants
     // of the encoded game frame (gOriginal), restoring detail a low-resolution first pass could not
     // keep. 0 = chained answer only, 1 = game frame only. Appended inside the 256-byte padding.
     float ClampMerge;
+
+    // The pass-chain rasters (nr.output/passScratch/passClamp) are allocated at max(work, laterWork),
+    // so GetDimensions alone cannot tell a shader which region of a texture actually holds this
+    // frame's content once the two scales differ. Source* describes gSource's valid region (clamp
+    // input), Model* describes gModel's valid region (the final answer at the resolve). 0 falls
+    // back to GetDimensions, which is correct for every non-multipass path.
+    uint32_t SourceContentWidth;
+    uint32_t SourceContentHeight;
+    uint32_t ModelContentWidth;
+    uint32_t ModelContentHeight;
 };
 static_assert(sizeof(DlssNrConstants) == 256);
+static_assert(offsetof(DlssNrConstants, ResidualBlend) == 116);
+static_assert(offsetof(DlssNrConstants, ClampMerge) == 132);
+static_assert(offsetof(DlssNrConstants, SourceContentWidth) == 136);
+static_assert(offsetof(DlssNrConstants, SourceContentHeight) == 140);
+static_assert(offsetof(DlssNrConstants, ModelContentWidth) == 144);
+static_assert(offsetof(DlssNrConstants, ModelContentHeight) == 148);
 
 // Local mode numbering for dlssnr_residual.hlsl (a separate blob / PSO from the DlssNrMode shader).
 enum DlssNrResidualMode : uint32_t

@@ -111,7 +111,9 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
         useRcas = true;
     }
 
-    if (!RCAS->IsInit())
+    // Native DLSS can auto-enable RCAS from the game's sharpness even with RcasEnabled=false.
+    // The companion leaves that parameter to DLSS; never append our own sharpening pass.
+    if (FgOnly::Enabled || !RCAS->IsInit())
         useRcas = false;
 
     bool useOutputScaling =

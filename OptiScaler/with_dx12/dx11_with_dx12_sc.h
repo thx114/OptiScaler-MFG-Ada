@@ -87,6 +87,8 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     bool _WaitForInteropCopyOnPresentQueue();
 
     IDXGISwapChain* _real = nullptr;
+    // ReShade's native object; used only for an armed pre-flip capture, never to bypass ReShade.
+    IDXGISwapChain* _captureNative = nullptr;
     IDXGISwapChain1* _real1 = nullptr;
     IDXGISwapChain2* _real2 = nullptr;
     IDXGISwapChain3* _real3 = nullptr;
