@@ -1102,6 +1102,7 @@ HRESULT FGHooks::hkFGPresent1(IDXGISwapChain1* This, UINT SyncInterval, UINT Fla
 HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
                            const DXGI_PRESENT_PARAMETERS* pPresentParameters)
 {
+    const auto pacingStart = std::chrono::steady_clock::now();
     _lastPresentFlags = Flags;
 
     auto& state = State::Instance();
@@ -1190,7 +1191,12 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         LOG_TRACE("Accuired FG->Mutex: {}", fg->Mutex.getOwner());
     }
 
+    const auto pacingLocked = std::chrono::steady_clock::now();
     const bool fgFeatureActive = fg != nullptr && fg->IsActive() && !fg->IsPaused();
+    const bool inputGapPacing = state.activeFgOutput == FGOutput::DLSSG &&
+        state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+        state.activeFgInput == FGInput::Upscaler && config->FGDLSSGSoftPause.value_or_default();
+    bool fgFrameSubmitted = false;
 
     sl::FrameToken* localToken = nullptr;
     sl::Result tokenResult = sl::Result::eErrorReflexAPI;
@@ -1224,7 +1230,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         // skip here to avoid processing it twice (once per real frame, ignoring interpolated frames).
         if (!DlssNr::ConsumeBridgeAppliedEpoch())
             DlssNr::ApplyToFinishedPicture(This, state.currentCommandQueue);
-        fg->Present();
+        fgFrameSubmitted = fg->Present();
     }
     else if (willPresent && fg != nullptr)
     {
@@ -1271,12 +1277,14 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     if (willPresent)
         state.fgPresentIsCalled = true;
 
+    const auto pacingSubmit = std::chrono::steady_clock::now();
     HRESULT result;
     if (pPresentParameters == nullptr)
         result = o_FGSCPresent(This, SyncInterval, Flags);
     else
         result = o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
 
+    const auto pacingPresented = std::chrono::steady_clock::now();
     if (result == S_OK)
     {
         LOG_DEBUG("Result: {:X}", result);
@@ -1294,17 +1302,36 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         if (StreamlineProxy::PCLSetMarker() != nullptr)
             StreamlineProxy::PCLSetMarker()(sl::PCLMarker::ePresentEnd, *localToken);
 
-        LOG_DEBUG("Calling ReflexSleep");
-        StreamlineProxy::ReflexSleep()(*localToken);
+        // Always pair the markers, but a bypassed picture must not wait on the old FG token.
+        if (!inputGapPacing || fgFrameSubmitted)
+        {
+            LOG_DEBUG("Calling ReflexSleep");
+            StreamlineProxy::ReflexSleep()(*localToken);
+        }
     }
 
+    const auto pacingReflex = std::chrono::steady_clock::now();
     if (state.swapchainInteropApi == SwapchainInteropApi::None)
         Hudfix_Dx12::PresentEnd();
 
-    if (willPresent && !state.reflexLimitsFps && state.activeFgOutput != FGOutput::NoFG &&
-        !IdentifyGpu::getPrimaryGpu().usesDxvk && !XellHooks::canLimit())
+    // On the HSR DX11->DX12 companion path the game/Streamline (and, when
+    // installed, RenoDX DLSS5) already owns the presentation cadence.  Adding
+    // Opti's secondary FrameLimit here is particularly harmful with Ada MFG:
+    // one game frame produces several generated presents, while the old
+    // limiter doubles the interval for an active FG feature.  That creates a
+    // queue bubble and shows up as 50-100 ms waits in FG Present/Reflex.  Keep
+    // the limiter for native DX12/other FG paths, but never pace the bridged
+    // HSR upscaler input path.
+    const bool bridgedHsrUpscaler =
+        state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+        state.activeFgInput == FGInput::Upscaler &&
+        state.activeFgOutput == FGOutput::DLSSG;
+    if (willPresent && !bridgedHsrUpscaler && !state.reflexLimitsFps &&
+        state.activeFgOutput != FGOutput::NoFG && !IdentifyGpu::getPrimaryGpu().usesDxvk &&
+        !XellHooks::canLimit())
     {
-        FrameLimit::sleep(fg != nullptr ? fg->IsActive() && !fg->IsPaused() : false);
+        FrameLimit::sleep(inputGapPacing ? fgFrameSubmitted :
+                         (fg != nullptr ? fg->IsActive() && !fg->IsPaused() : false));
     }
 
     if ((config->SimulateWaitableObject.value_or_default() ||
@@ -1320,6 +1347,16 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         fg->Mutex.unlockThis(2);
     }
 
+    const auto pacingEnd = std::chrono::steady_clock::now();
+    const auto elapsedMs = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    if (willPresent && elapsedMs(pacingStart, pacingEnd) >= 100.0)
+        LOG_WARN("FG pacing stall: thread={} sourceFrame={} active={} prepareLock={:.2f} dispatch={:.2f} present={:.2f} reflex={:.2f} tailLimit={:.2f}ms",
+                 GetCurrentThreadId(), state.frameCount, fgFeatureActive,
+                 elapsedMs(pacingStart, pacingLocked), elapsedMs(pacingLocked, pacingSubmit),
+                 elapsedMs(pacingSubmit, pacingPresented), elapsedMs(pacingPresented, pacingReflex),
+                 elapsedMs(pacingReflex, pacingEnd));
     LOG_DEBUG("Present finished");
 
     return result;

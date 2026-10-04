@@ -75,15 +75,20 @@ std::optional<double> GpuTime_Dx11::ReadGpuTime(ID3D11DeviceContext* context)
     {
         D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjointData;
 
-        if (context->GetData(_disjointQueries[readIndex], &disjointData, sizeof(disjointData), 0) == S_OK)
+        // Telemetry must not flush the game's command stream when the GPU is
+        // behind. Dropping an unavailable timing sample is preferable to adding work.
+        if (context->GetData(_disjointQueries[readIndex], &disjointData, sizeof(disjointData),
+                             D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK)
         {
             if (!disjointData.Disjoint && disjointData.Frequency > 0)
             {
                 UINT64 startTime = 0;
                 UINT64 endTime = 0;
 
-                if (context->GetData(_startQueries[readIndex], &startTime, sizeof(UINT64), 0) == S_OK &&
-                    context->GetData(_endQueries[readIndex], &endTime, sizeof(UINT64), 0) == S_OK)
+                if (context->GetData(_startQueries[readIndex], &startTime, sizeof(UINT64),
+                                     D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+                    context->GetData(_endQueries[readIndex], &endTime, sizeof(UINT64),
+                                     D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK)
                 {
                     if (endTime >= startTime)
                     {

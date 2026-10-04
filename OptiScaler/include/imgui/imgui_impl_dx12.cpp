@@ -265,8 +265,14 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandL
     // (This almost always points to ImGui::GetPlatformIO().Textures[] but is part of ImDrawData to allow overriding or disabling texture updates).
     if (draw_data->Textures != nullptr)
         for (ImTextureData* tex : *draw_data->Textures)
+        {
             if (tex->Status != ImTextureStatus_OK)
                 ImGui_ImplDX12_UpdateTexture(tex);
+            // Failed uploads are retried next frame; don't submit descriptors for
+            // a texture that the backend has not finished creating/updating.
+            if (tex->Status == ImTextureStatus_WantCreate || tex->Status == ImTextureStatus_WantUpdates)
+                return;
+        }
 
     // FIXME: We are assuming that this only gets called once per frame!
     ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
@@ -423,9 +429,15 @@ static void ImGui_ImplDX12_DestroyTexture(ImTextureData* tex)
 void ImGui_ImplDX12_UpdateTexture(ImTextureData* tex)
 {
     ImGui_ImplDX12_Data* bd = ImGui_ImplDX12_GetBackendData();
-    bool need_barrier_before_copy = true; // Do we need a resource barrier before we copy new data in?
+    // Release builds do not execute IM_ASSERT: allocation failures during/after
+    // resize must never fall through to a null uploadBuffer->Map.
+    if (!tex || !bd || !bd->pd3dDevice || !bd->pCommandQueue ||
+        FAILED(bd->pd3dDevice->GetDeviceRemovedReason()))
+        return;
+    bool need_barrier_before_copy = tex->Status != ImTextureStatus_WantCreate;
 
-    if (tex->Status == ImTextureStatus_WantCreate)
+    // A failed upload keeps its allocated texture for a later retry.
+    if (tex->Status == ImTextureStatus_WantCreate && tex->BackendUserData == nullptr)
     {
         // Create and upload new texture to graphics system
         //IMGUI_DEBUG_LOG("UpdateTexture #%03d: WantCreate %dx%d\n", tex->UniqueID, tex->Width, tex->Height);
@@ -454,8 +466,14 @@ void ImGui_ImplDX12_UpdateTexture(ImTextureData* tex)
         desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
         ID3D12Resource* pTexture = nullptr;
-        bd->pd3dDevice->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
+        HRESULT textureResult = bd->pd3dDevice->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pTexture));
+        if (FAILED(textureResult) || pTexture == nullptr)
+        {
+            bd->InitInfo.SrvDescriptorFreeFn(&bd->InitInfo, backend_tex->hFontSrvCpuDescHandle, backend_tex->hFontSrvGpuDescHandle);
+            IM_DELETE(backend_tex);
+            return;
+        }
 
         // Create SRV
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
@@ -518,33 +536,42 @@ void ImGui_ImplDX12_UpdateTexture(ImTextureData* tex)
 
         // FIXME-OPT: Can upload buffer be reused?
         ID3D12Resource* uploadBuffer = nullptr;
+        ID3D12Fence* fence = nullptr;
+        ID3D12CommandAllocator* cmdAlloc = nullptr;
+        ID3D12GraphicsCommandList* cmdList = nullptr;
+        HANDLE event = nullptr;
+        auto abandonBeforeSubmit = [&]()
+        {
+            SafeRelease(cmdList);
+            SafeRelease(cmdAlloc);
+            SafeRelease(fence);
+            SafeRelease(uploadBuffer);
+            if (event) ::CloseHandle(event);
+        };
         HRESULT hr = bd->pd3dDevice->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuffer));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !uploadBuffer) { abandonBeforeSubmit(); return; }
 
         // Create temporary command list and execute immediately
-        ID3D12Fence* fence = nullptr;
         hr = bd->pd3dDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !fence) { abandonBeforeSubmit(); return; }
 
-        HANDLE event = ::CreateEvent(0, 0, 0, 0);
-        IM_ASSERT(event != nullptr);
+        event = ::CreateEvent(0, 0, 0, 0);
+        if (!event) { abandonBeforeSubmit(); return; }
 
         // FIXME-OPT: Create once and reuse?
-        ID3D12CommandAllocator* cmdAlloc = nullptr;
         hr = bd->pd3dDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !cmdAlloc) { abandonBeforeSubmit(); return; }
 
         // FIXME-OPT: Can be use the one from user? (pass ID3D12GraphicsCommandList* to ImGui_ImplDX12_UpdateTextures)
-        ID3D12GraphicsCommandList* cmdList = nullptr;
         hr = bd->pd3dDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmdAlloc, nullptr, IID_PPV_ARGS(&cmdList));
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !cmdList) { abandonBeforeSubmit(); return; }
 
         // Copy to upload buffer
         void* mapped = nullptr;
         D3D12_RANGE range = { 0, upload_size };
         hr = uploadBuffer->Map(0, &range, &mapped);
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr) || !mapped) { abandonBeforeSubmit(); return; }
         for (int y = 0; y < upload_h; y++)
             memcpy((void*)((uintptr_t)mapped + y * upload_pitch_dst), tex->GetPixelsAt(upload_x, upload_y + y), upload_pitch_src);
         uploadBuffer->Unmap(0, &range);
@@ -589,7 +616,7 @@ void ImGui_ImplDX12_UpdateTexture(ImTextureData* tex)
         }
 
         hr = cmdList->Close();
-        IM_ASSERT(SUCCEEDED(hr));
+        if (FAILED(hr)) { abandonBeforeSubmit(); return; }
 
         ID3D12CommandQueue* cmdQueue = bd->pCommandQueue;
         cmdQueue->ExecuteCommandLists(1, (ID3D12CommandList* const*)&cmdList);

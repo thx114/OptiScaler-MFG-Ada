@@ -1,11 +1,15 @@
 #pragma once
 #include <upscalers/IFeature_Dx11.h>
 #include "DLSSFeature.h"
+#include "NativeScreenSpaceGuides_Dx11.h"
 #include <string>
 
 class DLSSFeatureDx11 : public DLSSFeature, public IFeature_Dx11
 {
   private:
+    std::unique_ptr<NativeScreenSpaceGuides_Dx11> nativeScreenSpaceGuides;
+    bool nativeScreenSpaceActiveLastFrame = false;
+    UINT64 nativeScreenSpaceDiagFrame = 0;
   protected:
   public:
     bool InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Parameter* InParameters) override;

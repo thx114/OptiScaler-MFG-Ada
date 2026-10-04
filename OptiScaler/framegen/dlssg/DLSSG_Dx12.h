@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <framegen/IFGFeature_Dx12.h>
 #include "FgDepthDebug.h"
@@ -20,6 +20,26 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     UINT64 lastOptionFrame = 0;
 
     bool Dispatch();
+    void PauseForInputGap();
+    void HardStopForInputGap();
+    bool SubmitFreshFrame(bool freshSource);
+    bool _inputGapPaused = false;
+    bool _resetAfterInputGap = false;
+    unsigned int _inputGapMisses = 0;
+    // Tick count (GetTickCount64) at which PauseForInputGap last engaged; 0 when not paused.
+    // Drives the soft-pause hard-stop escalation in Present().
+    uint64_t _inputGapPausedAt = 0;
+    // 最近 8 次缺口的进入时刻（GetTickCount64），振荡检测用；HardStop 清零。
+    uint64_t _inputGapRing[8] = {};
+    uint32_t _inputGapRingIndex = 0;
+    // 缺口恢复后的冷静期（到此时刻前禁止时间/振荡 hard stop）：恢复初期游戏自身卡顿，
+    // 200ms 阈值会连环误杀（重建→再停→再重建 = 反复 NR 级联）。
+    uint64_t _inputGapResumeCooldownUntil = 0;
+
+    // 缺口实时直通：把当前 FG backbuffer（游戏最新画面）拷入此纹理以 HudlessColor
+    // dispatch（每帧 reset）。DLSSG 永不释放：菜单实时、无陈旧重复、返回零重建。
+    ID3D12Resource* _gapHudless = nullptr;
+    bool GapDispatchCurrentFrame();
 
     // Raw numFramesToGenerateMax exactly as the runtime reported it at swapchain/context
     // creation, before MfgUnlock raises it. -1 until the first successful slDLSSGGetState.

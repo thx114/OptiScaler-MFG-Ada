@@ -618,7 +618,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
             *OutHandle = feat->Handle();
             State::Instance().api = DX11;
             State::Instance().currentFeature = feat;
-            evalCounter = 0;
+            // The native feature is still warm. Reapplying SkipFirstFrames here
+            // would report success without producing output after every UI toggle.
             // Refresh the cached device pointer. HSR reuses the same D3D11 device/context,
             // but this is cheap insurance and matches what a fresh create does below.
             InDevCtx->GetDevice(&D3D11Device);
@@ -898,7 +899,9 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_EvaluateFeature(ID3D11DeviceConte
 
     auto upscaleResult = deviceContext->Evaluate(InDevCtx, InParameters);
 
-    if (State::Instance().activeFgInput == FGInput::Upscaler)
+    // A failed SR evaluation did not produce a valid current-frame picture.
+    // Do not advance FG or tag its guides against stale output.
+    if (upscaleResult && State::Instance().activeFgInput == FGInput::Upscaler)
     {
         if (WithDx12::IsInited())
         {

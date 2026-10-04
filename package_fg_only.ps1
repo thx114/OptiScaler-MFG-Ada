@@ -1,4 +1,4 @@
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.1.6')
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.1.9')
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $dll = Join-Path $root 'x64/Release/a/OptiScaler.dll'
@@ -15,8 +15,8 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 Copy-Item -LiteralPath $dll -Destination "$stage/OptiScaler.dll"
 Copy-Item -LiteralPath "$root/redist/fg-only/OptiScaler.ini" -Destination "$stage/OptiScaler.ini"
 $files = @('README.md','LICENSE','setup_windows.bat','get_streamline.ps1',
-    'redist/streamline/manifest.json','docs/RELEASE-0.1.6.md','docs/DLSS-FRAME-GENERATION.md',
-    'docs/CREDITS.md','docs/RTX40-MFG.md','docs/LEGACY-NR-README.md')
+    'redist/streamline/manifest.json',"docs/RELEASE-$Version.md",'docs/DLSS-FRAME-GENERATION.md',
+    'docs/CREDITS.md','docs/RTX40-MFG.md','docs/LEGACY-NR-README.md','presets/Genshin-NR.ini')
 foreach ($file in $files) {
     $target = Join-Path $stage $file
     New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null

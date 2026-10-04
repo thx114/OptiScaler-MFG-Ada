@@ -25,6 +25,13 @@
 
 static bool ShouldCreateDx11wDx12Swapchain()
 {
+    // Do not create the hidden D3D12 interop/presentation swapchain when FG is disabled.
+    // On the HSR D3D11 path, an inactive bridge creates a native D3D12 swapchain and
+    // prevents RenoDX DLSS-NR from binding its Present/device proxy correctly.
+    if (!Config::Instance()->FGEnabled.value_or_default() &&
+        !State::Instance().externalFrameGeneration)
+        return false;
+
     return State::Instance().activeFgInput == FGInput::Upscaler && State::Instance().activeFgOutput != FGOutput::NoFG &&
            State::Instance().activeFgInput != FGInput::NvngxFG;
 }

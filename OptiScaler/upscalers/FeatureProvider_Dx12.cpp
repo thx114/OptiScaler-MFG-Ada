@@ -23,19 +23,6 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
     ScopedSkipHeapCapture skipHeapCapture {};
 
-    if constexpr (FgOnly::Enabled)
-    {
-        // Never silently replace the external NR producer with FSR/XeSS/W12.
-        if (upscaler == Upscaler::DLSSD || !primaryGpu.dlssCapable || !state.NVNGX_DLSS_Path.has_value())
-        {
-            LOG_ERROR("FG-only companion requires native DLSS SR; requested backend unavailable");
-            return false;
-        }
-        *feature = std::make_unique<DLSSFeatureDx12>(handleId, parameters);
-        cfg.Dx12Upscaler.set_volatile_value(Upscaler::DLSS);
-        return (*feature)->ModuleLoaded();
-    }
-
     switch (upscaler)
     {
     case Upscaler::XeSS:
@@ -112,9 +99,6 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
 {
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
-
-    if constexpr (FgOnly::Enabled)
-        state.newBackend = Upscaler::DLSS;
 
     if (!state.changeBackend[handleId])
         return false;

@@ -1052,6 +1052,8 @@ void WINAPI hkmouse_event(DWORD flags, DWORD dx, DWORD dy, DWORD data, ULONG_PTR
 
 SHORT WINAPI hkGetAsyncKeyState(int vk)
 {
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetAsyncKeyState(vk);
     if (ShouldBlockVirtualKey(vk))
     {
         {
@@ -1068,6 +1070,8 @@ SHORT WINAPI hkGetAsyncKeyState(int vk)
 
 SHORT WINAPI hkGetKeyState(int vk)
 {
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetKeyState(vk);
     if (ShouldBlockVirtualKey(vk))
     {
         {
@@ -1086,6 +1090,8 @@ BOOL WINAPI hkGetKeyboardState(PBYTE keyState)
 {
     if (keyState == nullptr)
         return FALSE;
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetKeyboardState(keyState);
 
     const BOOL result = o_GetKeyboardState(keyState);
 

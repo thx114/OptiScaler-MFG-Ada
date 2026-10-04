@@ -1,5 +1,6 @@
 #pragma once
 #include "IFeature_Dx11.h"
+#include "Dx11ScreenSpaceGuides.h"
 
 #include "IFeature_Dx12.h"
 
@@ -46,6 +47,9 @@ class IFeature_Dx11wDx12 : public virtual IFeature_Dx11
     Dx11WithDx12::D3D11_TEXTURE2D_RESOURCE_C dx11Out = {};
 
     ID3D11Resource* paramOutput[DX11WDX12_NUM_OF_BUFFERS] = {};
+
+    std::unique_ptr<Dx11ScreenSpaceGuides> screenSpaceGuides;
+    bool screenSpaceActiveLastFrame = false;
 
     bool CreateD3D12Objects();
     bool ProcessDx11Textures(const NVSDK_NGX_Parameter* InParameters);

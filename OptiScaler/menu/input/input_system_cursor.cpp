@@ -191,6 +191,8 @@ BOOL WINAPI hkGetCursorPos(LPPOINT point)
 {
     if (point == nullptr)
         return FALSE;
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetCursorPos(point);
 
     {
         std::unique_lock lock(_state.Mutex);
@@ -208,6 +210,8 @@ BOOL WINAPI hkGetCursorPos(LPPOINT point)
 
 BOOL WINAPI hkSetCursorPos(int x, int y)
 {
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_SetCursorPos(x, y);
     {
         std::unique_lock lock(_state.Mutex);
 
@@ -225,6 +229,8 @@ BOOL WINAPI hkGetPhysicalCursorPos(LPPOINT point)
 {
     if (point == nullptr)
         return FALSE;
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetPhysicalCursorPos != nullptr ? o_GetPhysicalCursorPos(point) : o_GetCursorPos(point);
 
     {
         std::unique_lock lock(_state.Mutex);
@@ -242,6 +248,8 @@ BOOL WINAPI hkGetPhysicalCursorPos(LPPOINT point)
 
 BOOL WINAPI hkSetPhysicalCursorPos(int x, int y)
 {
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_SetPhysicalCursorPos != nullptr ? o_SetPhysicalCursorPos(x, y) : o_SetCursorPos(x, y);
     {
         std::unique_lock lock(_state.Mutex);
 
@@ -257,6 +265,8 @@ BOOL WINAPI hkSetPhysicalCursorPos(int x, int y)
 
 DWORD WINAPI hkGetMessagePos()
 {
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetMessagePos();
     {
         std::unique_lock lock(_state.Mutex);
 
@@ -275,6 +285,8 @@ DWORD WINAPI hkGetMessagePos()
 int WINAPI hkGetMouseMovePointsEx(UINT pointSize, LPMOUSEMOVEPOINT point, LPMOUSEMOVEPOINT buffer, int bufferPoints,
                                   DWORD resolution)
 {
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetMouseMovePointsEx(pointSize, point, buffer, bufferPoints, resolution);
     {
         std::unique_lock lock(_state.Mutex);
 
@@ -291,6 +303,8 @@ int WINAPI hkGetMouseMovePointsEx(UINT pointSize, LPMOUSEMOVEPOINT point, LPMOUS
 
 BOOL WINAPI hkClipCursor(const RECT* rect)
 {
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_ClipCursor(rect);
     {
         std::unique_lock lock(_state.Mutex);
 
@@ -310,6 +324,8 @@ BOOL WINAPI hkGetClipCursor(LPRECT rect)
 {
     if (rect == nullptr)
         return FALSE;
+    if (IsLowLevelWindowsHookPassthrough())
+        return o_GetClipCursor(rect);
 
     {
         std::unique_lock lock(_state.Mutex);

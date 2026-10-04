@@ -6,18 +6,23 @@
 
 inline uint64_t FrameLimit::get_timestamp()
 {
-    FILETIME fileTime;
-    GetSystemTimePreciseAsFileTime(&fileTime);
-
-    uint64_t time = (static_cast<uint64_t>(fileTime.dwHighDateTime) << 32) | fileTime.dwLowDateTime;
-
-    return time * 100;
+    // Pacing uses elapsed time, never the adjustable wall clock.
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 // https://learn.microsoft.com/en-us/windows/win32/sync/using-waitable-timer-objects
 inline int FrameLimit::timer_sleep(int64_t hundred_ns)
 {
-    static HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    // SetWaitableTimerEx rearms an existing timer. Sharing it between presenting
+    // threads can steal another thread's wakeup and hit the one-second timeout.
+    struct ThreadTimer
+    {
+        HANDLE handle = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        ~ThreadTimer() { if (handle) CloseHandle(handle); }
+    };
+    static thread_local ThreadTimer threadTimer;
+    const auto timer = threadTimer.handle;
     LARGE_INTEGER due_time;
 
     due_time.QuadPart = -hundred_ns;
@@ -63,6 +68,7 @@ inline int FrameLimit::combined_sleep(int64_t ns)
 
 void FrameLimit::sleep(bool fgActive)
 {
+    static thread_local uint64_t previous_frame_time = 0;
     if (auto fpsCap = Config::Instance()->FramerateLimit.value_or_default(); fpsCap != 0.0f)
     {
         uint64_t min_interval_us = std::clamp((uint64_t) (1'000'000 / fpsCap), 0ULL, 100'000'000ULL);
@@ -70,7 +76,6 @@ void FrameLimit::sleep(bool fgActive)
         if (fgActive)
             min_interval_us *= 2;
 
-        static uint64_t previous_frame_time = 0;
         uint64_t current_time = get_timestamp();
         uint64_t frame_time = current_time - previous_frame_time;
         if (frame_time < 1000 * min_interval_us)
@@ -80,4 +85,6 @@ void FrameLimit::sleep(bool fgActive)
         }
         previous_frame_time = get_timestamp();
     }
+    else
+        previous_frame_time = 0;
 }

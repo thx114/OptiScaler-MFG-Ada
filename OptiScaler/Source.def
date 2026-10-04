@@ -869,3 +869,8 @@ EnumDirTreeW = _EnumDirTreeW
 EnumDirTree = _EnumDirTree
 DbgHelpCreateUserDumpW = _DbgHelpCreateUserDumpW
 
+
+OptiScalerGetDepthFrame = _OptiScalerGetDepthFrame PRIVATE
+OptiScalerReleaseDepthFrame = _OptiScalerReleaseDepthFrame PRIVATE
+OptiScalerBeginExternalPresent = _OptiScalerBeginExternalPresent PRIVATE
+OptiScalerEndExternalPresent = _OptiScalerEndExternalPresent PRIVATE

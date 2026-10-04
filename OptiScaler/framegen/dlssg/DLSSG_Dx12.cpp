@@ -426,6 +426,216 @@ bool DLSSG_Dx12::Shutdown()
     return true;
 }
 
+void DLSSG_Dx12::PauseForInputGap()
+{
+    // Keep accepting fresh guides; Deactivate/Activate would add another warmup.
+    // Do not toggle Streamline eOff/eOn for a short source gap: that transition
+    // can serialize the client queue and recreate internal state even with retention.
+    _resetAfterInputGap = true;
+    if (_inputGapPaused)
+        return;
+
+    _dlssgOptionsValid = false;
+    _inputGapPaused = true;
+    _inputGapPausedAt = GetTickCount64();
+
+    // 振荡检测：退出流程 / 相机切换时游戏会"1 帧一抖"地停 DLSS —— 这种短缺口永远等不到
+    // 2 秒阈值，但 DLSSG 在缺口之间持续 pacing 重复帧（6x 下每恢复一次吐 5 张）。
+    // 10 秒内第 5 次进缺口 = 振荡，直接升级 hard stop。
+    const uint64_t now = GetTickCount64();
+    _inputGapRing[_inputGapRingIndex] = now;
+    _inputGapRingIndex = (_inputGapRingIndex + 1) % 8;
+    int recent = 0;
+    for (uint64_t t : _inputGapRing)
+        if (t != 0 && now - t <= 10000)
+            ++recent;
+    if (recent >= 5 && GetTickCount64() >= _inputGapResumeCooldownUntil)
+    {
+        LOG_INFO("DLSSG input-gap oscillation: {} gaps in 10 s, escalating to hard stop", recent);
+        HardStopForInputGap();
+    }
+    State::Instance().dlssgDetectedInterpolationCount = 0;
+    ReflexHooks::setDlssgFrameCount(0);
+}
+
+void DLSSG_Dx12::HardStopForInputGap()
+{
+    // Soft-pause escalation (see FGDLSSGSoftPauseHardStopMs). The soft pause keeps the NGX
+    // feature alive, but the DLSSG runtime's present pacing keeps running: every game present
+    // without fresh input is answered with repeats of the last generated frames. On MFG that is
+    // a continuous stream of duplicate presents, and the external DLSS5 NR hook on the FG
+    // swapchain processes every repeat -- NR's own output is already in the backbuffer, so each
+    // repeat is NR applied on top of NR. A gap this long is a pause/menu, not a transient stall,
+    // so release the runtime for real. NewFrame() re-activates on the next source frame; the
+    // one-time NVSDK_NGX_CreateFeature rebuild (~185ms) lands where the hitch is invisible.
+    const uint64_t pausedFor = _inputGapPausedAt != 0 ? GetTickCount64() - _inputGapPausedAt : 0;
+    LOG_INFO("DLSSG input-gap hard stop: gap lasted {} ms, releasing DLSS-G runtime (MFG duplicates end)",
+             pausedFor);
+
+    sl::DLSSGOptions options {};
+    options.mode = sl::DLSSGMode::eOff;
+    options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
+    const auto result = StreamlineProxy::DLSSGSetOptions()(viewport, options);
+    if (result == sl::Result::eOk)
+    {
+        State::Instance().dlssgLastSetMode = sl::DLSSGMode::eOff;
+        State::Instance().dlssgDetectedInterpolationCount = 0;
+        ReflexHooks::setDlssgFrameCount(0);
+        _runtimeNeedsDisable = false;
+    }
+    else
+    {
+        // Leave _runtimeNeedsDisable set so Deactivate() retries the eOff.
+        _runtimeNeedsDisable = true;
+        LOG_ERROR("DLSSG hard-stop SetOptions failed: {}; will retry the eOff", magic_enum::enum_name(result));
+    }
+
+    sl::ReflexOptions reflexConst = {};
+    reflexConst.mode = sl::ReflexMode::eOff;
+    reflexConst.useMarkersToOptimize = false;
+    StreamlineProxy::ReflexSetOptions()(reflexConst);
+
+    // The next Activate() must resend both option sets.
+    _dlssgOptionsValid = false;
+    _reflexOptionsValid = false;
+    _inputGapPaused = false;
+    _inputGapPausedAt = 0;
+    ZeroMemory(_inputGapRing, sizeof(_inputGapRing));
+    _inputGapRingIndex = 0;
+    _inputGapResumeCooldownUntil = 0;
+    _resetAfterInputGap = true;
+
+    // Same terminal state as the PausePresentGap path: pass-through presents, and NewFrame()
+    // (which fires with the next fresh source frame) re-activates.
+    _isActive = false;
+    _waitingNewFrameData = true;
+    _resumeShortWarmup = true;
+}
+
+bool DLSSG_Dx12::GapDispatchCurrentFrame()
+{
+    static unsigned int gapFailLogged = 0;
+    auto fail = [](const char* why) {
+        if (gapFailLogged < 5)
+        {
+            ++gapFailLogged;
+            LOG_WARN("DLSSG gap-dispatch unavailable: {}", why);
+        }
+        return false;
+    };
+
+    if (_swapChain == nullptr || _device == nullptr)
+        return fail("no swapchain/device");
+
+    const int fIndex = GetIndex();
+
+    if (!_resourceReady[fIndex].contains(FG_ResourceType::Depth) || !_resourceReady[fIndex].at(FG_ResourceType::Depth) ||
+        !_resourceReady[fIndex].contains(FG_ResourceType::Velocity) || !_resourceReady[fIndex].at(FG_ResourceType::Velocity))
+        return fail("guides not ready");
+
+    Microsoft::WRL::ComPtr<IDXGISwapChain3> chain;
+    Microsoft::WRL::ComPtr<ID3D12Resource> backbuffer;
+    if (FAILED(_swapChain->QueryInterface(IID_PPV_ARGS(&chain))) ||
+        FAILED(chain->GetBuffer(chain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&backbuffer))) || backbuffer == nullptr)
+        return fail("backbuffer unavailable");
+
+    const auto desc = backbuffer->GetDesc();
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1)
+        return fail("unexpected backbuffer shape");
+
+    if (_gapHudless != nullptr)
+    {
+        const auto oldDesc = _gapHudless->GetDesc();
+        if (oldDesc.Width != desc.Width || oldDesc.Height != desc.Height || oldDesc.Format != desc.Format)
+        {
+            _gapHudless->Release();
+            _gapHudless = nullptr;
+        }
+    }
+    if (_gapHudless == nullptr)
+    {
+        D3D12_RESOURCE_DESC copyDesc = desc;
+        copyDesc.MipLevels = 1;
+        copyDesc.Flags = (copyDesc.Flags | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) &
+                         ~(D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+        const auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+        if (FAILED(_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &copyDesc, D3D12_RESOURCE_STATE_COMMON,
+                                                   nullptr, IID_PPV_ARGS(&_gapHudless))))
+            return fail("copy texture allocation failed");
+        _gapHudless->SetName(L"dlssg-gap-hudless");
+    }
+
+    auto* cmdList = GetSCCommandList(fIndex);
+    if (cmdList == nullptr)
+        return fail("no command list");
+
+    D3D12_RESOURCE_BARRIER toDest = {};
+    toDest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toDest.Transition.pResource = _gapHudless;
+    toDest.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    toDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    toDest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmdList->ResourceBarrier(1, &toDest);
+    cmdList->CopyResource(_gapHudless, backbuffer.Get());
+    toDest.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    toDest.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+    cmdList->ResourceBarrier(1, &toDest);
+
+    _noUi[fIndex] = true;
+    _noHudless[fIndex] = false;
+
+    // 帧槽里留着游戏最后一帧的 hudless（可能仍是 ValidNow 状态，会触发
+    // SetResource 的 "slot 已被 ValidNow 占用" 拒绝）；重置为非 ValidNow 再提交。
+    auto& slot = _frameResources[fIndex][FG_ResourceType::HudlessColor];
+    slot = Dx12Resource {};
+    slot.validity = FG_ResourceValidity::UntilPresent;
+
+    Dx12Resource res = {};
+    res.type = FG_ResourceType::HudlessColor;
+    res.frameIndex = fIndex;
+    res.resource = _gapHudless;
+    res.validity = FG_ResourceValidity::UntilPresentFromDispatch;
+    res.state = D3D12_RESOURCE_STATE_COMMON;
+    res.width = (UINT) desc.Width;
+    res.height = desc.Height;
+    if (!SetResource(&res))
+        return fail("SetResource rejected");
+
+    _frameCount++;
+    _reset[fIndex] = 1;
+    if (!Dispatch())
+    {
+        _frameCount--;
+        return fail("dispatch failed");
+    }
+    return true;
+}
+
+bool DLSSG_Dx12::SubmitFreshFrame(bool freshSource)
+{
+    ++_fgFramePresentId;
+    if (freshSource)
+    {
+        _inputGapMisses = 0;
+        const bool submitted = Dispatch();
+        if (submitted)
+            return true;
+    }
+    else
+    {
+        ++_inputGapMisses;
+    }
+
+    // HSR occasionally omits one or two guide submissions during a camera/UI
+    // transition. Treat those as ordinary repeated presents. Resetting DLSSG
+    // history for every such transient is the source of visible periodic hitching.
+    constexpr unsigned int kInputGapGracePresents = 3;
+    if (Config::Instance()->FGEnabled.value_or_default() &&
+        _inputGapMisses >= kInputGapGracePresents)
+        PauseForInputGap();
+    return false;
+}
+
 bool DLSSG_Dx12::Dispatch()
 {
     LOG_FUNC();
@@ -514,6 +724,10 @@ bool DLSSG_Dx12::Dispatch()
 
         if (dlssgSetOptionsResult == sl::Result::eOk)
         {
+            // A later failure must turn the runtime off again, even while resuming.
+            _inputGapPaused = false;
+            _inputGapPausedAt = 0;
+            _inputGapResumeCooldownUntil = GetTickCount64() + 5000;
             _lastDlssgModeSent = options.mode;
             _lastDlssgNumSent = options.numFramesToGenerate;
             _lastDlssgDynamicTargetSent = options.dynamicTargetFrameRate;
@@ -690,6 +904,10 @@ bool DLSSG_Dx12::Dispatch()
     else
         constData.reset = sl::Boolean::eFalse;
 
+    // A source gap invalidates FG history even if game-reset overrides are enabled.
+    if (_resetAfterInputGap)
+        constData.reset = sl::Boolean::eTrue;
+
     constData.depthInverted = IsInvertedDepth() ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     constData.cameraMotionIncluded = sl::Boolean::eTrue;
     constData.motionVectors3D = sl::Boolean::eFalse;
@@ -724,6 +942,13 @@ bool DLSSG_Dx12::Dispatch()
         return false;
     }
 
+    if (_resetAfterInputGap)
+    {
+        LOG_INFO("DLSSG input-gap resume: source={}, fresh guides, history reset", willDispatchFrame);
+        _resetAfterInputGap = false;
+    }
+    _inputGapMisses = 0;
+
     LOG_DEBUG("Result: Ok");
 
     return true;
@@ -755,6 +980,20 @@ void DLSSG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     }
 
     _constants = fgConstants;
+
+    // Do not create/activate DLSSG before the Upscaler input feature exists.
+    // On the DX11 FSR2 handoff path the FG swapchain may appear before
+    // OptiScaler has a current upscaler feature; creating DLSSG in that
+    // window leaves the first Present without valid upscaled resources.
+    if (Config::Instance()->FGEnabled.value_or_default() &&
+        State::Instance().activeFgInput == FGInput::Upscaler &&
+        State::Instance().currentFeature == nullptr)
+    {
+        if (_device != nullptr)
+            Deactivate();
+        LOG_DEBUG("FG waiting for active upscaler feature");
+        return;
+    }
 
     // If FG Enabled from menu
     if (Config::Instance()->FGEnabled.value_or_default())
@@ -961,10 +1200,28 @@ void DLSSG_Dx12::CreateObjects(ID3D12Device* InDevice)
 
 bool DLSSG_Dx12::Present()
 {
-    auto fIndex = GetIndexWillBeDispatched();
+    const bool inputGapProtection =
+        State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12 &&
+        State::Instance().activeFgInput == FGInput::Upscaler &&
+        Config::Instance()->FGDLSSGSoftPause.value_or_default();
+    const bool freshSource = _frameCount > _lastDispatchedFrame;
+    // Do not replay pre-gap queued history when a new source finally arrives.
+    if (inputGapProtection && freshSource && _resetAfterInputGap)
+        _lastDispatchedFrame = _frameCount - 1;
+    const bool drawSourceResources = !inputGapProtection || freshSource;
+    auto fIndex = inputGapProtection && !freshSource ? GetIndex() : GetIndexWillBeDispatched();
+
+
+    // 输入缺口实时直通：无新 DLSS 输入时把当前 FG backbuffer 当作 HudlessColor
+    // 立即 dispatch（每帧 reset）。DLSSG 永不释放：菜单实时、无陈旧重复帧、
+    // 返回游戏零重建；无 guide 的菜单 present 由插件侧 Required 拒绝 NR。
+    bool gapDispatched = false;
+    if (Config::Instance()->FGDLSSGGapDispatch.value_or_default() &&
+        inputGapProtection && !freshSource && !_waitingNewFrameData && IsActive() && !IsPaused())
+        gapDispatched = GapDispatchCurrentFrame();
     LOG_DEBUG("fIndex: {}", fIndex);
 
-    if (Config::Instance()->FGDrawUIOverFG.value_or_default())
+    if (drawSourceResources && Config::Instance()->FGDrawUIOverFG.value_or_default())
     {
         auto ui = GetResource(FG_ResourceType::UIColor, fIndex);
         if (ui && (ui->validity == FG_ResourceValidity::UntilPresent ||
@@ -998,7 +1255,7 @@ bool DLSSG_Dx12::Present()
         }
     }
 
-    if (IsActive() && !IsPaused())
+    if (drawSourceResources && IsActive() && !IsPaused())
     {
         if (State::Instance().fgHudlessCompare)
         {
@@ -1032,7 +1289,7 @@ bool DLSSG_Dx12::Present()
 
     auto& debugState = State::Instance();
     debugState.fgDepthDebugAvailable = false;
-    if (debugState.fgDepthDebug && IsActive() && !IsPaused() && _swapChain != nullptr)
+    if (drawSourceResources && debugState.fgDepthDebug && IsActive() && !IsPaused() && _swapChain != nullptr)
     {
         auto depth = GetResource(FG_ResourceType::Depth, fIndex);
         Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain;
@@ -1090,6 +1347,24 @@ bool DLSSG_Dx12::Present()
 
             _scCommandListResetted[fIndex] = false;
         }
+    }
+
+    if (inputGapProtection)
+    {
+        if (gapDispatched)
+            return true;
+        // Soft-pause escalation: a gap long enough is a pause/menu, not a stall. While the
+        // soft pause keeps the runtime alive, DLSSG paces repeats of the last generated
+        // frames (MFG duplicates) and every repeat is re-processed by the external DLSS5
+        // NR hook. After the deadline, release the runtime so presents pass through plain.
+        const int hardStopMs = Config::Instance()->FGDLSSGSoftPauseHardStopMs.value_or_default();
+        // 恢复后的 5 秒冷静期内不升级：返回游戏初期游戏自身会卡（流送/编译），
+        // 阈值会连环误杀形成 stop/rebuild 级联（表现为 2s+1s+0.5s 的反复 NR）。
+        const bool cooldown = GetTickCount64() < _inputGapResumeCooldownUntil;
+        if (!freshSource && !cooldown && hardStopMs > 0 && _inputGapPaused && !_waitingNewFrameData &&
+            _inputGapPausedAt != 0 && GetTickCount64() - _inputGapPausedAt >= (uint64_t) hardStopMs)
+            HardStopForInputGap();
+        return SubmitFreshFrame(freshSource);
     }
 
     // Pause FG (and release its resources via Deactivate) only after this many presents have gone by
@@ -1258,8 +1533,16 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
 
             if (lastFormat[fIndex] != DXGI_FORMAT_UNKNOWN && lastFormat[fIndex] != desc.Format)
             {
-                State::Instance().fgChanged = true;
-                return false;
+                if (fResource->resource == _gapHudless)
+                {
+                    // 缺口直通纹理：格式跟随 FG backbuffer，不代表游戏换 hudless 格式
+                    lastFormat[fIndex] = desc.Format;
+                }
+                else
+                {
+                    State::Instance().fgChanged = true;
+                    return false;
+                }
             }
 
             lastFormat[fIndex] = desc.Format;

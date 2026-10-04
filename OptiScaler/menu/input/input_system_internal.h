@@ -416,6 +416,10 @@ using DirectInputDeviceRelease_t = ULONG(WINAPI*)(void*);
 
 extern InputState _state;
 
+void SetWindowsHookMenuVisible(bool visible);
+std::uint64_t WindowsHookPassthroughCount();
+bool IsLowLevelWindowsHookPassthrough();
+
 extern GetAsyncKeyState_t o_GetAsyncKeyState;
 extern GetKeyState_t o_GetKeyState;
 extern GetKeyboardState_t o_GetKeyboardState;

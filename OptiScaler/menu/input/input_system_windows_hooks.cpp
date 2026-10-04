@@ -2,9 +2,56 @@
 #include "input_system_internal.h"
 
 #include <array>
+#include <atomic>
 
 namespace OptiInput
 {
+// Low-level callbacks run on the installing thread and must not wait for the
+// render thread to finish input polling. Publish only the immutable callback
+// address here; ordinary slot bookkeeping remains protected by _state.Mutex.
+static std::array<std::atomic<HOOKPROC>, MaxTrackedWindowsHooks> lowLevelPassthroughProcs {};
+static std::atomic<bool> windowsHookMenuVisible { false };
+static std::atomic<std::uint64_t> windowsHookPassthroughCount { 0 };
+static thread_local unsigned lowLevelPassthroughDepth = 0;
+
+bool IsLowLevelWindowsHookPassthrough() { return lowLevelPassthroughDepth != 0; }
+
+struct ScopedLowLevelPassthrough
+{
+    ScopedLowLevelPassthrough() { ++lowLevelPassthroughDepth; }
+    ~ScopedLowLevelPassthrough() { --lowLevelPassthroughDepth; }
+    ScopedLowLevelPassthrough(const ScopedLowLevelPassthrough&) = delete;
+    ScopedLowLevelPassthrough& operator=(const ScopedLowLevelPassthrough&) = delete;
+};
+
+void SetWindowsHookMenuVisible(bool visible)
+{
+    windowsHookMenuVisible.store(visible, std::memory_order_release);
+}
+
+std::uint64_t WindowsHookPassthroughCount()
+{
+    return windowsHookPassthroughCount.load(std::memory_order_relaxed);
+}
+
+bool TryInvokeLowLevelPassthrough(std::size_t slotIndex, int code, WPARAM wParam, LPARAM lParam, LRESULT& result)
+{
+    if (slotIndex >= lowLevelPassthroughProcs.size() ||
+        windowsHookMenuVisible.load(std::memory_order_acquire))
+        return false;
+
+    const auto proc = lowLevelPassthroughProcs[slotIndex].load(std::memory_order_acquire);
+    if (proc == nullptr)
+        return false;
+
+    windowsHookPassthroughCount.fetch_add(1, std::memory_order_relaxed);
+    // Menu-closed callbacks and their input queries need no overlay filtering.
+    // Avoid re-entering the input mutex through a hooked Get*State/GetCursorPos.
+    ScopedLowLevelPassthrough bypass;
+    result = proc(code, wParam, lParam);
+    return true;
+}
+
 #define OPTI_WINDOWS_HOOK_PROXY(index)                                                                                 \
     static LRESULT CALLBACK WindowsHookProxy##index(int code, WPARAM wParam, LPARAM lParam)                            \
     {                                                                                                                  \
@@ -156,6 +203,8 @@ int AllocateWindowsHookSlotLocked(int hookType, HOOKPROC proc, HINSTANCE module,
         slot.OriginalProc = proc;
         slot.ThreadId = threadId;
         slot.Module = module;
+        lowLevelPassthroughProcs[i].store(
+            hookType == WH_MOUSE_LL || hookType == WH_KEYBOARD_LL ? proc : nullptr, std::memory_order_release);
         LOG_DEBUG("allocated windows hook slot:{} type:{} proc:{} module:{} threadId:{}", static_cast<unsigned>(i),
                   hookType, reinterpret_cast<std::uintptr_t>(proc), static_cast<void*>(module), threadId);
         return static_cast<int>(i);
@@ -169,6 +218,7 @@ void ClearWindowsHookSlotLocked(std::size_t slotIndex)
     if (slotIndex >= _state.WindowsHookSlots.size())
         return;
 
+    lowLevelPassthroughProcs[slotIndex].store(nullptr, std::memory_order_release);
     _state.WindowsHookSlots[slotIndex] = {};
 }
 
@@ -391,6 +441,14 @@ bool ShouldBlockWindowsHookCallbackLocked(WindowsHookSlot& slot, int code, WPARA
 
 LRESULT CALLBACK InvokeWindowsHookProxy(std::size_t slotIndex, int code, WPARAM wParam, LPARAM lParam)
 {
+    // Windows requires negative hook codes to be forwarded without processing.
+    if (code < 0)
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+
+    LRESULT passthroughResult = 0;
+    if (TryInvokeLowLevelPassthrough(slotIndex, code, wParam, lParam, passthroughResult))
+        return passthroughResult;
+
     HHOOK hook = nullptr;
     HOOKPROC originalProc = nullptr;
     int hookType = 0;
@@ -402,12 +460,18 @@ LRESULT CALLBACK InvokeWindowsHookProxy(std::size_t slotIndex, int code, WPARAM 
         std::unique_lock lock(_state.Mutex);
 
         if (slotIndex >= _state.WindowsHookSlots.size())
+        {
+            lock.unlock();
             return CallNextHookEx(nullptr, code, wParam, lParam);
+        }
 
         WindowsHookSlot& slot = _state.WindowsHookSlots[slotIndex];
 
         if (!slot.InUse)
+        {
+            lock.unlock();
             return CallNextHookEx(nullptr, code, wParam, lParam);
+        }
 
         hook = slot.Hook;
         originalProc = slot.OriginalProc;
@@ -641,11 +705,12 @@ bool ReleaseTrackedWindowsHooksLocked()
 {
     bool allRemoved = true;
 
-    for (WindowsHookSlot& slot : _state.WindowsHookSlots)
+    for (std::size_t slotIndex = 0; slotIndex < _state.WindowsHookSlots.size(); ++slotIndex)
     {
+        WindowsHookSlot& slot = _state.WindowsHookSlots[slotIndex];
         if (!slot.InUse || slot.Hook == nullptr)
         {
-            slot = {};
+            ClearWindowsHookSlotLocked(slotIndex);
             continue;
         }
 
@@ -671,7 +736,7 @@ bool ReleaseTrackedWindowsHooksLocked()
             continue;
         }
 
-        slot = {};
+        ClearWindowsHookSlotLocked(slotIndex);
     }
 
     _state.WindowsHookKeyboardBlockedDown = {};

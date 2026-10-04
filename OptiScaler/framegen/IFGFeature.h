@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "SysUtils.h"
 #include <OwnedMutex.h>
 #include <dxgi1_6.h>
@@ -71,6 +71,7 @@ class IFGFeature
     UINT64 _lastDispatchedFrame = 0;
     UINT64 _lastFGFrame = 0;
     bool _waitingNewFrameData = false;
+    bool _resumeShortWarmup = false; // HardStopForInputGap 的恢复：NewFrame 用 2 帧预热替代 10 帧
     int _framesToInterpolate = -1;
     int _maxInterpolationCount = 1;
     bool _supportsDMFG = false;

@@ -120,6 +120,8 @@ class IFGFeature_Dx12 : public virtual IFGFeature
     virtual bool SetResource(Dx12Resource* inputResource) = 0;
     virtual void SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) = 0;
 
+    bool RetireSharedInputReads();
+
     ID3D12GraphicsCommandList* GetUICommandList(int index = -1);
     ID3D12GraphicsCommandList* GetSCCommandList(int index = -1);
 

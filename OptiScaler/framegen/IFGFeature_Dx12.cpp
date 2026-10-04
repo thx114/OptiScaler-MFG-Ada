@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "IFGFeature_Dx12.h"
+#include "Dx12InputReadRetirement.h"
 #include <State.h>
 #include <Config.h>
 
@@ -48,6 +49,8 @@ bool IFGFeature_Dx12::HasResource(FG_ResourceType type, int index)
 
 bool IFGFeature_Dx12::WaitForUIAllocator(UINT index)
 {
+    if (index >= BUFFER_COUNT)
+        return false;
     if (_uiFence == nullptr || _uiFenceEvent == nullptr)
         return true;
 
@@ -56,6 +59,11 @@ bool IFGFeature_Dx12::WaitForUIAllocator(UINT index)
         return true;
 
     const auto completedValue = _uiFence->GetCompletedValue();
+    if (completedValue == UINT64_MAX)
+    {
+        LOG_ERROR("UI input-reader fence reports device removal; slot {}", index);
+        return false;
+    }
     if (completedValue >= fenceValue)
         return true;
 
@@ -112,6 +120,16 @@ bool IFGFeature_Dx12::SubmitUICommandList(UINT index)
     }
 
     return true;
+}
+
+bool IFGFeature_Dx12::RetireSharedInputReads()
+{
+    // Native DX11 inputs share one cache across scene/character evaluate calls.
+    // Don't overwrite/release that cache until previously recorded flip/copy
+    // commands have finished reading it on the FG graphics queue.
+    return RetireDx12InputReaders(BUFFER_COUNT,
+        [&](std::size_t slot) { return SubmitUICommandList(static_cast<UINT>(slot)); },
+        [&](std::size_t slot) { return WaitForUIAllocator(static_cast<UINT>(slot)); });
 }
 
 ID3D12GraphicsCommandList* IFGFeature_Dx12::GetUICommandList(int index)
@@ -266,7 +284,17 @@ void IFGFeature_Dx12::NewFrame()
     if (_waitingNewFrameData)
     {
         LOG_DEBUG("Re-activating FG");
-        UpdateTarget();
+        if (_resumeShortWarmup)
+        {
+            // Hard-stop 恢复：10 帧长预热会让"返回游戏"多一段 FG 静默期
+            // （Dispatch 被 IsPaused 挡死、插件 guide 匹配重排 = 可见的反复 NR）。
+            _targetFrame = _frameCount + 2;
+            _resumeShortWarmup = false;
+        }
+        else
+        {
+            UpdateTarget();
+        }
         Activate();
         _waitingNewFrameData = false;
     }

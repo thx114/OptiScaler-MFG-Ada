@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 
 #include "Config.h"
 
@@ -363,6 +363,11 @@ bool Config::Reload(std::filesystem::path iniPath)
                 FGDLSSGPausePresentGap.reset();
 
             FGDLSSGSoftPause.set_from_config(readBool("DLSSG", "SoftPause"));
+            FGDLSSGGapDispatch.set_from_config(readBool("DLSSG", "GapDispatch"));
+
+            FGDLSSGSoftPauseHardStopMs.set_from_config(readInt("DLSSG", "SoftPauseHardStopMs"));
+            if (FGDLSSGSoftPauseHardStopMs.has_value() && FGDLSSGSoftPauseHardStopMs.value() < 0)
+                FGDLSSGSoftPauseHardStopMs.reset();
         }
 
         // FSR FG Inputs
@@ -896,6 +901,8 @@ bool Config::Reload(std::filesystem::path iniPath)
         {
             Dx11DelayedInit.set_from_config(readInt("Dx11withDx12", "UseDelayedInit"));
             DontUseNTShared.set_from_config(readBool("Dx11withDx12", "DontUseNTShared"));
+            Dx11ScreenSpaceGuides.set_from_config(readBool("Dx11withDx12", "ScreenSpaceGuides"));
+            DlssNativeScreenSpaceGuides.set_from_config(readBool("DLSS", "NativeScreenSpaceGuides"));
         }
 
         // NvApi
@@ -1027,7 +1034,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
         FgOnly::Apply(*this, Upscaler::DLSS);
         if constexpr (FgOnly::Enabled)
-            LOG_INFO("FG-only companion v1: native DX11/DX12 DLSS + FG; internal NR and post-processing disabled");
+            LOG_INFO("FG-only companion v1: selectable DX11/DX12 upscaler + FG; internal NR and post-processing disabled");
         return true;
     }
 
@@ -1273,6 +1280,8 @@ bool Config::SaveIni()
                      GetIntValue(Instance()->FGDLSSGPausePresentGap.value_for_config()).c_str());
         ini.SetValue("DLSSG", "SoftPause",
                      GetBoolValue(Instance()->FGDLSSGSoftPause.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "SoftPauseHardStopMs",
+                     GetIntValue(Instance()->FGDLSSGSoftPauseHardStopMs.value_for_config()).c_str());
     }
 
     // OptiFG
@@ -1799,6 +1808,10 @@ bool Config::SaveIni()
 
     // Dx11 with Dx12
     {
+        ini.SetValue("DLSS", "NativeScreenSpaceGuides",
+                     GetBoolValue(Instance()->DlssNativeScreenSpaceGuides.value_for_config()).c_str());
+        ini.SetValue("Dx11withDx12", "ScreenSpaceGuides",
+                     GetBoolValue(Instance()->Dx11ScreenSpaceGuides.value_for_config()).c_str());
         ini.SetValue("Dx11withDx12", "DontUseNTShared",
                      GetBoolValue(Instance()->DontUseNTShared.value_for_config()).c_str());
     }

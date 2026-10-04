@@ -1,6 +1,7 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "menu_overlay_base.h"
 #include "menu_overlay_dx.h"
+#include "MenuGpuLifetime_Dx12.h"
 
 #include <Util.h>
 #include <Logger.h>
@@ -23,12 +24,15 @@ static ID3D11RenderTargetView* g_pd3dRenderTarget = nullptr;
 
 // for dx12
 static ID3D12Device* g_pd3dDeviceParam = nullptr;
+static Microsoft::WRL::ComPtr<ID3D12Device> g_menuDeviceOwner;
+static Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_menuQueueOwner;
 static ID3D12DescriptorHeap* g_pd3dRtvDescHeap = nullptr;
 static ID3D12DescriptorHeap* g_pd3dSrvDescHeap = nullptr;
 static DescriptorHeapAllocator g_pd3dSrvDescHeapAlloc;
 static ID3D12CommandQueue* g_pd3dCommandQueue = nullptr;
 static ID3D12GraphicsCommandList* g_pd3dCommandList = nullptr;
 static ID3D12CommandAllocator* g_commandAllocators[NUM_BACK_BUFFERS] = {};
+static MenuGpuLifetime_Dx12 g_menuGpuLifetime;
 static ID3D12Resource* g_mainRenderTargetResource[NUM_BACK_BUFFERS] = {};
 static D3D12_CPU_DESCRIPTOR_HANDLE g_mainRenderTargetDescriptor[NUM_BACK_BUFFERS] = {};
 
@@ -89,6 +93,13 @@ static void CreateRenderTargetDx12(ID3D12Device* device, IDXGISwapChain* pSwapCh
         return;
     }
 
+    if (sd.BufferCount > NUM_BACK_BUFFERS || !g_pd3dRtvDescHeap)
+    {
+        LOG_ERROR("Menu DX12 render targets unavailable: count {} capacity {} heap {}", sd.BufferCount,
+                  NUM_BACK_BUFFERS, static_cast<void*>(g_pd3dRtvDescHeap));
+        return;
+    }
+
     for (UINT i = 0; i < sd.BufferCount; ++i)
     {
         ID3D12Resource* pBackBuffer = nullptr;
@@ -118,6 +129,14 @@ static void CleanupRenderTargetDx12(bool clearQueue)
 {
     if (!_isInited || !_dx12Device || State::Instance().isShuttingDown)
         return;
+
+    const auto menuWait = g_menuGpuLifetime.WaitIdle();
+    if (FAILED(menuWait))
+    {
+        LOG_ERROR("Menu DX12 cleanup postponed: GPU completion unproven {:X}", static_cast<unsigned>(menuWait));
+        MenuOverlayBase::HideMenu();
+        return;
+    }
 
     for (UINT i = 0; i < NUM_BACK_BUFFERS; ++i)
     {
@@ -149,8 +168,11 @@ static void CleanupRenderTargetDx12(bool clearQueue)
             g_pd3dCommandQueue = nullptr;
 
         g_pd3dSrvDescHeapAlloc.Destroy();
+        g_menuGpuLifetime.Reset();
 
-        // SAFE_RELEASE(g_pd3dDeviceParam);
+        g_pd3dDeviceParam = nullptr;
+        g_menuQueueOwner.Reset();
+        g_menuDeviceOwner.Reset();
 
         _dx12Device = false;
         _isInited = false;
@@ -291,6 +313,23 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
 
     // Get device from swapchain
     ID3D12Device* device = g_pd3dDeviceParam;
+    const auto deviceStatus = device->GetDeviceRemovedReason();
+    if (FAILED(deviceStatus))
+    {
+        LOG_ERROR("Menu DX12 device unavailable {:X}; skipping UI upload", static_cast<unsigned>(deviceStatus));
+        MenuOverlayBase::HideMenu();
+        pSwapChain->Release();
+        return;
+    }
+    const auto lifetimeInit = g_menuGpuLifetime.Initialize(device,
+        static_cast<ID3D12CommandQueue*>(currentSCCommandQueue));
+    if (FAILED(lifetimeInit))
+    {
+        LOG_ERROR("Menu DX12 fence initialization failed {:X}", static_cast<unsigned>(lifetimeInit));
+        MenuOverlayBase::HideMenu();
+        pSwapChain->Release();
+        return;
+    }
 
     ImGuiIO& io = ImGui::GetIO();
     (void) io;
@@ -438,9 +477,25 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
                 ImGui::Render();
 
                 UINT backBufferIdx = pSwapChain->GetCurrentBackBufferIndex();
+                if (backBufferIdx >= NUM_BACK_BUFFERS || !g_commandAllocators[backBufferIdx] ||
+                    !g_mainRenderTargetResource[backBufferIdx] || !g_pd3dCommandList)
+                {
+                    LOG_ERROR("Menu DX12 invalid frame resources after resize: index {}", backBufferIdx);
+                    MenuOverlayBase::HideMenu();
+                    pSwapChain->Release();
+                    return;
+                }
+                auto result = g_menuGpuLifetime.WaitSlot(backBufferIdx);
+                if (FAILED(result))
+                {
+                    LOG_ERROR("Menu DX12 allocator wait failed {:X}", static_cast<unsigned>(result));
+                    MenuOverlayBase::HideMenu();
+                    pSwapChain->Release();
+                    return;
+                }
                 ID3D12CommandAllocator* commandAllocator = g_commandAllocators[backBufferIdx];
 
-                auto result = commandAllocator->Reset();
+                result = commandAllocator->Reset();
                 if (result != S_OK)
                 {
                     LOG_ERROR("commandAllocator->Reset: {0:X}", (unsigned long) result);
@@ -486,6 +541,12 @@ static void RenderImGui_DX12(IDXGISwapChain* pSwapChainPlain)
 
                 ID3D12CommandList* ppCommandLists[] = { g_pd3dCommandList };
                 ((ID3D12CommandQueue*) currentSCCommandQueue)->ExecuteCommandLists(1, ppCommandLists);
+                result = g_menuGpuLifetime.SignalSubmitted(backBufferIdx);
+                if (FAILED(result))
+                {
+                    LOG_ERROR("Menu DX12 submission fence failed {:X}", static_cast<unsigned>(result));
+                    MenuOverlayBase::HideMenu();
+                }
             }
         }
         else
@@ -561,13 +622,46 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
     }
 
+    // The queue/device can be replaced during FG recreation without changing
+    // the HWND. Never carry ImGui's old device/descriptor backend onto the new queue.
+    if (_isInited && device12 != nullptr && g_menuDeviceOwner &&
+        (g_menuDeviceOwner.Get() != device12 || g_menuQueueOwner.Get() != currentSCCommandQueue))
+    {
+        LOG_INFO("Menu DX12 graphics context changed; retiring old UI resources before reinitializing");
+        CleanupRenderTargetDx12(true);
+        if (_isInited)
+        {
+            // Cleanup was postponed because old GPU submissions have not retired.
+            if (cq) cq->Release();
+            if (device) device->Release();
+            if (device12) device12->Release();
+            return;
+        }
+        _dx12Device = true;
+    }
+
     // Process window handle changed, update base
     if (MenuOverlayBase::Handle() != hWnd)
     {
         LOG_DEBUG("Handle changed {:X} -> {:X}", (size_t) MenuOverlayBase::Handle(), (size_t) hWnd);
 
         if (MenuOverlayBase::IsInited())
+        {
+            // Shutdown the renderer while its ImGui context still exists.
+            if (g_menuDeviceOwner)
+            {
+                CleanupRenderTargetDx12(true);
+                if (_isInited)
+                {
+                    if (cq) cq->Release();
+                    if (device) device->Release();
+                    if (device12) device12->Release();
+                    return;
+                }
+                _dx12Device = device12 != nullptr;
+            }
             MenuOverlayBase::Shutdown();
+        }
 
         MenuOverlayBase::Init(hWnd, isUWP);
 
@@ -594,8 +688,11 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
             CleanupRenderTargetDx12(true);
 
-            g_pd3dCommandQueue = cq;
-            g_pd3dDeviceParam = device12;
+            g_menuQueueOwner = static_cast<ID3D12CommandQueue*>(currentSCCommandQueue);
+            g_menuDeviceOwner = device12;
+            g_pd3dCommandQueue = g_menuQueueOwner.Get();
+            g_pd3dDeviceParam = g_menuDeviceOwner.Get();
+            _dx12Device = true;
 
             MenuOverlayBase::Dx12Ready();
             _isInited = true;

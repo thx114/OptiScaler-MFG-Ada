@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "SysUtils.h"
 #include "State.h"
@@ -764,6 +764,8 @@ class Config
     // dx11wdx12
     CustomOptional<bool> Dx11DelayedInit { false };
     CustomOptional<bool> DontUseNTShared { true };
+    CustomOptional<bool> Dx11ScreenSpaceGuides { false };
+    CustomOptional<bool> DlssNativeScreenSpaceGuides { false };
 
     // vulkanwdx12
     CustomOptional<bool> VulkanUseCopyForInputs { false };
@@ -930,6 +932,21 @@ class Config
     // and the next Activate rebuilds it via NVSDK_NGX_CreateFeature (~185ms hitch). With it, Activate
     // just resumes the existing feature. Explicit FG disable still sends eOff.
     CustomOptional<bool> FGDLSSGSoftPause { false };
+
+    // Soft-pause escalation: while a soft pause (input gap) lasts, the DLSSG runtime keeps its
+    // present pacing alive and repeats the last generated frames for every game present -- on MFG
+    // that is a stream of duplicate presents, and an external present-path consumer (the DLSS5 NR
+    // addon on the FG swapchain) re-processes every repeat, feeding NR's own output back into NR.
+    // Transient gaps (camera cuts, ultimates) are sub-second and must keep the cheap soft pause,
+    // so after this many milliseconds of uninterrupted gap the pause escalates to a real eOff:
+    // DLSSG stops generating, presents pass through, and the next Activate rebuilds the feature
+    // once (the ~185ms hitch lands in a pause/menu where it is invisible). 0 disables the
+    // escalation (pure soft pause, previous behavior).
+    CustomOptional<int> FGDLSSGSoftPauseHardStopMs { 0 };
+
+    // 输入缺口实时直通：无新 DLSS 输入时把当前 FG backbuffer 当作 HudlessColor 立即
+    // dispatch（每帧 reset），DLSSG 永不释放。false = 回退纯软暂停（由 HardStopMs 兜底）。
+    CustomOptional<bool> FGDLSSGGapDispatch { true };
 
     // As per
     // https://github.com/artur-graniszewski/dlss-enabler-main/blob/a92464d468eb0d91ae17befa66c6bf6229f20b9f/Utils/DlssgProxy.cpp#L1033

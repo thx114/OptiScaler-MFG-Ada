@@ -14,8 +14,12 @@ template <class Config, class Backend> void Apply(Config& cfg, Backend nativeDls
 {
     if constexpr (!Enabled)
         return;
-    cfg.Dx11Upscaler.set_volatile_value(nativeDlss);
-    cfg.Dx12Upscaler.set_volatile_value(nativeDlss);
+    // The upscaler stays user-selectable (DLSS / FSR / XeSS, in the menu or the ini);
+    // only fall back to native DLSS when nothing is configured.
+    if (!cfg.Dx11Upscaler.has_value())
+        cfg.Dx11Upscaler.set_volatile_value(nativeDlss);
+    if (!cfg.Dx12Upscaler.has_value())
+        cfg.Dx12Upscaler.set_volatile_value(nativeDlss);
     cfg.DLSSEnabled.set_volatile_value(true);
     cfg.DlssNrEnabled.set_volatile_value(false);
     cfg.DlssNrFinishedPicture.set_volatile_value(false);

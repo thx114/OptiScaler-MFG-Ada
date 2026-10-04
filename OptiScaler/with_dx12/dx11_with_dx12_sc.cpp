@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include "dx11_with_dx12_sc.h"
 #include "ReShadePresentCapture.h"
+#include "Dx11FgResize.h"
 
 #include <with_dx12/with_dx12.h>
 #include <dlssnr/DlssNrFeature_Dx12.h>
@@ -322,7 +323,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     static std::atomic<uint64_t> sBridgeSamples{0};
     const bool doTiming = (sBridgeSamples.fetch_add(1) % 300 == 0);
     auto tNow = [] { return std::chrono::steady_clock::now(); };
-    auto tStart = doTiming ? tNow() : std::chrono::steady_clock::time_point{};
+    auto tStart = tNow();
     auto tCopyShared = tStart, tWaitDx11 = tStart, tCopyFG = tStart, tWaitInterop = tStart, tNr = tStart, tPrePresent = tStart;
 
     auto dx11Index = _GetDx11BackBufferIndexForPresent();
@@ -330,7 +331,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (!_RequestSharedBackBuffer(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
 
-    if (doTiming) tCopyShared = tNow();
+    tCopyShared = tNow();
     if (!_CopyDx11BackBufferToShared(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
     bool hiddenPresented = false;
@@ -359,13 +360,13 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             LOG_INFO("FG companion capture: attempted={} copied={} hiddenResult={:X} dx11Index={}",
                      request.attempted, request.succeeded, (UINT)hiddenResult, dx11Index);
     }
-    if (doTiming) tWaitDx11 = tNow();
+    tWaitDx11 = tNow();
     if (!_WaitDx11ThenDx12())
         return DXGI_ERROR_DEVICE_REMOVED;
-    if (doTiming) tCopyFG = tNow();
+    tCopyFG = tNow();
     if (!_CopyDx11SharedToDx12FGBackBuffer(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
-    if (doTiming) tWaitInterop = tNow();
+    tWaitInterop = tNow();
     if (!_WaitForInteropCopyOnPresentQueue())
         return DXGI_ERROR_DEVICE_REMOVED;
     // Thin bridge (rewrite): the D3D12 _fgSwapChain owns the game's visible window; the real D3D11
@@ -382,7 +383,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (gameFocused && DlssNr::HasActiveFinishedPictureOwner())
         DlssNr::ApplyToFinishedPictureBridge(_fgSwapChain,
                                              _fg != nullptr ? _fg->GetCommandQueue() : _dx12CommandQueue);
-    if (doTiming) tNr = tNow();
+    tNr = tNow();
 
     const bool fgHookedPresenter =
         State::Instance().currentFGSwapchain == _fgSwapChain && !FGHooks::IsDx12InteropPresentSC(_fgSwapChain);
@@ -411,11 +412,11 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             LOG_WARN("hidden real DX11 Present failed: {:X}", (UINT) realPresentResult);
     }
 
-    if (doTiming) tPrePresent = tNow();
+    tPrePresent = tNow();
     auto result = _fgSwapChain->Present(SyncInterval, Flags);
-    if (doTiming)
+    const auto tEnd = tNow();
+    if (doTiming || std::chrono::duration<double, std::milli>(tEnd - tStart).count() >= 100.0)
     {
-        auto tEnd = tNow();
         auto ms = [](auto a, auto b) {
             return std::chrono::duration<double, std::milli>(b - a).count();
         };
@@ -427,7 +428,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
         double dRealPresent = ms(tNr, tPrePresent);
         double dFgPresent = ms(tPrePresent, tEnd);
         double dTotal = ms(tStart, tEnd);
-        LOG_INFO("bridge breakdown: copyShared {:.2f} waitDx11 {:.2f} copyFG {:.2f} waitInterop {:.2f} NR {:.2f} realPres {:.2f} fgPres {:.2f} TOTAL {:.2f}",
+        LOG_INFO("bridge breakdown: request {:.2f} hiddenCapture {:.2f} signalDx11 {:.2f} copyAcquire {:.2f} queueWaitNr {:.2f} overlay {:.2f} fgPres {:.2f} TOTAL {:.2f}",
                  dCopyShared, dWaitDx11, dCopyFG, dWaitInterop, dNr, dRealPresent, dFgPresent, dTotal);
     }
 
@@ -487,7 +488,10 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
         return DXGI_ERROR_DEVICE_REMOVED;
 
     if (!_WaitForCopyQueueIdle())
-        LOG_WARN("continuing ResizeBuffers after copy fence wait failure");
+    {
+        LOG_ERROR("ResizeBuffers aborted: interop copy resources are still in flight");
+        return DXGI_ERROR_DEVICE_REMOVED;
+    }
 
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropBackBuffers();
@@ -497,12 +501,19 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
 
     HRESULT fgResult = DXGI_ERROR_DEVICE_REMOVED;
     if (SUCCEEDED(realResult) && _fgSwapChain != nullptr)
-        fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    {
+        Dx11FgResizeArgs args {};
+        fgResult = ResizeDx11FgSwapchain(_real, _fgSwapChain, &args);
+        LOG_INFO("DX11 FG resize: game count {} requested {}x{} fmt {} flags {:X}; FG preserved ring, resolved {}x{} fmt {} flags {:X}, result {:X}",
+            BufferCount, Width, Height, static_cast<unsigned>(NewFormat), SwapChainFlags,
+            args.width, args.height, static_cast<unsigned>(args.format), args.flags, static_cast<unsigned>(fgResult));
+    }
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
 
     if (SUCCEEDED(realResult))
     {
+        _currentFakeIndex = 0;
         _RefreshCachedSwapchainDesc();
 
         if (Config::Instance()->FGEnabled.value_or_default())
@@ -713,30 +724,41 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1: count {}, size {}x{}, format {}, flags {:X}", BufferCount, Width, Height,
               (UINT) Format, SwapChainFlags);
 
+    // The base fallback already resizes both chains; never resize FG twice.
+    if (_real3 == nullptr)
+        return ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+
     if (!DlssNr::WaitForFinishedPicture())
         return DXGI_ERROR_DEVICE_REMOVED;
 
     if (!_WaitForCopyQueueIdle())
-        LOG_WARN("continuing ResizeBuffers1 after copy fence wait failure");
+    {
+        LOG_ERROR("ResizeBuffers1 aborted: interop copy resources are still in flight");
+        return DXGI_ERROR_DEVICE_REMOVED;
+    }
 
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropBackBuffers();
 
-    HRESULT realResult = _real3 != nullptr ? _real3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
-                                                                    pCreationNodeMask, ppPresentQueue)
-                                           : ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+    HRESULT realResult = _real3->ResizeBuffers1(BufferCount, Width, Height, Format, SwapChainFlags,
+                                               pCreationNodeMask, ppPresentQueue);
 
     HRESULT fgResult = DXGI_ERROR_DEVICE_REMOVED;
     if (SUCCEEDED(realResult) && _fgSwapChain != nullptr)
     {
-        // The game's ppPresentQueue is not valid for the DX12 FG swapchain. Use ResizeBuffers for phase 1.
-        fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+        // The native DX11 queue/count/format/flags do not describe the FG chain.
+        Dx11FgResizeArgs args {};
+        fgResult = ResizeDx11FgSwapchain(_real, _fgSwapChain, &args);
+        LOG_INFO("DX11 FG resize1: game count {} requested {}x{} fmt {} flags {:X}; FG preserved ring, resolved {}x{} fmt {} flags {:X}, result {:X}",
+            BufferCount, Width, Height, static_cast<unsigned>(Format), SwapChainFlags,
+            args.width, args.height, static_cast<unsigned>(args.format), args.flags, static_cast<unsigned>(fgResult));
     }
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1 results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
 
-    if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
+    if (SUCCEEDED(realResult))
     {
+        _currentFakeIndex = 0;
         _RefreshCachedSwapchainDesc();
 
         if (Config::Instance()->FGEnabled.value_or_default())

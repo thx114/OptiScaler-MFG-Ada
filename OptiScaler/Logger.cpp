@@ -160,7 +160,10 @@ void PrepareLogger()
             }
 
             shared_logger->set_level((spdlog::level::level_enum) Config::Instance()->LogLevel.value_or_default());
-            shared_logger->flush_on(spdlog::level::trace);
+            // Trace is emitted many times per frame. Flushing every message puts
+            // file I/O directly on the rendering thread (or saturates its queue).
+            // Errors still flush immediately; CloseLogger flushes orderly exit.
+            shared_logger->flush_on(spdlog::level::err);
 
             spdlog::set_default_logger(shared_logger);
         }

@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include <dlssnr/DlssNr_MenuOverlay.h>
 #include "menu_common.h"
 #if defined(OPTISCALER_RTX40_MFG)
@@ -482,11 +482,6 @@ void MenuCommon::GetCurrentBackendInfo(const API api, Upscaler& upscaler, std::s
 
 void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options)
 {
-    if constexpr (FgOnly::Enabled)
-    {
-        ImGui::TextUnformatted(I18n::Tr("Native DLSS (FG companion)"));
-        return;
-    }
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
 
     // Determine display name
@@ -3962,6 +3957,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
             }
         }
 
+    if constexpr (!FgOnly::Enabled)
+    {
         auto fgOutput = reinterpret_cast<IFGFeature_Dx12*>(state.currentFG);
         if (((state.activeFgOutput == FGOutput::FSRFG || state.activeFgOutput == FGOutput::XeFG ||
               state.activeFgOutput == FGOutput::DLSSG) &&
@@ -3997,6 +3994,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
             ImGui::EndDisabled();
         }
+    }
 
         const bool showOutputSpecificFGSettings = state.activeFgInput == FGInput::DLSSG ||
                                                   state.activeFgInput == FGInput::FSRFG ||
@@ -7468,8 +7466,6 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
     if constexpr (FgOnly::Enabled)
     {
         ImGui::SeparatorText(I18n::Tr("OptiScaler FG-only companion"));
-        ImGui::TextWrapped("%s", I18n::Tr("Native DLSS + frame generation. Neural rendering is handled by the external ReShade addon."));
-        ImGui::TextWrapped("%s", I18n::Tr("DX11: native DLSS with DX12 FG bridge. DX12: native DLSS and FG. No W12 upscaler."));
         if (ImGui::Button(I18n::Tr("Rebuild DLSS input (external NR recovery)")))
             ReInitUpscaler();
         ShowTooltip(I18n::Tr("Recovery attempt after alt-tab: rebuilds DLSS and briefly pauses FG. External NR recovery still requires in-game verification."));

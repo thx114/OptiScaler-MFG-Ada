@@ -8,9 +8,11 @@ template<class T> struct Option
 {
     T runtime, persisted;
     int writes = 0;
-    void set_volatile_value(T value) { runtime = value; ++writes; }
+    bool configured = true;
+    bool has_value() const { return configured; }
+    void set_volatile_value(T value) { runtime = value; configured = true; ++writes; }
 };
-enum class Backend { W12, XeSS, DLSS };
+enum class Backend { W12, XeSS, FSR31, DLSS };
 struct Config
 {
     Option<Backend> Dx11Upscaler { Backend::W12, Backend::W12 };
@@ -36,17 +38,20 @@ struct Config
 int main()
 {
     for (int multiplier : {2, 6})
+    for (auto backend : {Backend::W12, Backend::XeSS, Backend::FSR31, Backend::DLSS})
     {
         Config cfg;
+        cfg.Dx11Upscaler.runtime = cfg.Dx11Upscaler.persisted = backend;
+        cfg.Dx12Upscaler.runtime = cfg.Dx12Upscaler.persisted = backend;
         cfg.fgMultiplier = multiplier;
         FgOnly::Apply(cfg, Backend::DLSS);
         FgOnly::Apply(cfg, Backend::DLSS); // repeat reload is idempotent
-        assert(cfg.Dx11Upscaler.runtime == (FgOnly::Enabled ? Backend::DLSS : Backend::W12));
-        assert(cfg.Dx11Upscaler.persisted == Backend::W12);
-        assert(cfg.Dx11Upscaler.writes == (FgOnly::Enabled ? 2 : 0));
-        assert(cfg.Dx12Upscaler.runtime == (FgOnly::Enabled ? Backend::DLSS : Backend::W12));
-        assert(cfg.Dx12Upscaler.persisted == Backend::W12);
-        assert(cfg.Dx12Upscaler.writes == (FgOnly::Enabled ? 2 : 0));
+        assert(cfg.Dx11Upscaler.runtime == backend);
+        assert(cfg.Dx11Upscaler.persisted == backend);
+        assert(cfg.Dx11Upscaler.writes == 0);
+        assert(cfg.Dx12Upscaler.runtime == backend);
+        assert(cfg.Dx12Upscaler.persisted == backend);
+        assert(cfg.Dx12Upscaler.writes == 0);
         assert(cfg.DLSSEnabled.runtime == (FgOnly::Enabled ? true : false));
         assert(cfg.DLSSEnabled.persisted == false);
         assert(cfg.DLSSEnabled.writes == (FgOnly::Enabled ? 2 : 0));
@@ -94,6 +99,23 @@ int main()
         assert(cfg.DrsMaxOverrideEnabled.writes == (FgOnly::Enabled ? 2 : 0));
         assert(cfg.fgMultiplier == multiplier && cfg.fgEnabled);
     }
-    std::puts(FgOnly::Enabled ? "FG-only policy passed: native DX11/DX12, no NR/post-FX, FG unchanged" : "Full build policy passed: no overrides");
+    // Auto/unset falls back to DLSS only once, without changing persisted values.
+    Config automatic;
+    automatic.Dx11Upscaler.configured = automatic.Dx12Upscaler.configured = false;
+    FgOnly::Apply(automatic, Backend::DLSS);
+    FgOnly::Apply(automatic, Backend::DLSS);
+    assert(automatic.Dx11Upscaler.runtime == (FgOnly::Enabled ? Backend::DLSS : Backend::W12));
+    assert(automatic.Dx12Upscaler.runtime == (FgOnly::Enabled ? Backend::DLSS : Backend::W12));
+    assert(automatic.Dx11Upscaler.writes == (FgOnly::Enabled ? 1 : 0));
+    assert(automatic.Dx12Upscaler.writes == (FgOnly::Enabled ? 1 : 0));
+    assert(automatic.Dx11Upscaler.persisted == Backend::W12);
+    assert(automatic.Dx12Upscaler.persisted == Backend::W12);
+    // A user-selected FSR backend must survive the next policy application.
+    automatic.Dx11Upscaler.runtime = automatic.Dx11Upscaler.persisted = Backend::FSR31;
+    automatic.Dx11Upscaler.configured = true;
+    FgOnly::Apply(automatic, Backend::DLSS);
+    assert(automatic.Dx11Upscaler.runtime == Backend::FSR31);
+    assert(automatic.Dx11Upscaler.persisted == Backend::FSR31);
+    std::puts(FgOnly::Enabled ? "FG-only policy passed: selectable DX11/DX12, auto DLSS fallback, no NR/post-FX, FG unchanged" : "Full build policy passed: no overrides");
 }
 

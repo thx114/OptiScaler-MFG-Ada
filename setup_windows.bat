@@ -406,13 +406,14 @@ echo.
 
 set setupSuccess=true
 
-REM Neural Rendering is optional; install the model separately as documented in INSTALL-DLSSNR.md.
+REM FG-only companion: NR belongs to the external addon, not OptiScaler.
 if "%setupSuccess%"=="true" (
     echo.
-    echo Neural Rendering is off by default. See INSTALL-DLSSNR.md for the model runtime
-    echo and enable it in the OptiScaler overlay when the ordinary upscaler works.
-    echo NR uses OptiScaler, your nvngx_dlssnr.dll, and the installed NVIDIA driver.
-    echo No separate NR helper DLL is required or supplied.
+    echo This FG-only build has no built-in Neural Rendering.
+    echo Install the external DLSS5 addon separately if you want NR.
+    echo FG runtime DLLs are NOT included in this package.
+    echo Before starting the game, follow README.md to run get_streamline.ps1
+    echo and install the runtime into the correct OptiScaler\streamline folder.
 )
 
 :end

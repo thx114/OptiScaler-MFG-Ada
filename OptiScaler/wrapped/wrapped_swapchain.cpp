@@ -1,6 +1,7 @@
 ﻿#include "pch.h"
 #include "wrapped_swapchain.h"
 #include <dlssnr/DlssNr.h>
+#include <exports/OptiDepthProvider.h>
 #include <hooks/DxgiSwapchainSizing.h>
 
 #include <Util.h>
@@ -13,6 +14,7 @@
 #include <menu/menu_overlay_dx.h>
 
 #include <misc/FrameLimit.h>
+#include <chrono>
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -273,6 +275,18 @@ void ReportD3D12LiveObjects(ID3D12Device* device)
 static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP)
 {
+    // An external FG producer may need one intermediate Present for pacing.
+    // Do not run RenoDX/OptiScaler finished-picture NR, overlay, frame pacing,
+    // or FG bookkeeping on that intermediate image: it is intentionally only
+    // the real frame and the producer owns the subsequent generated Present.
+    if (OptiScalerIsExternalPresent())
+    {
+        if (pPresentParameters == nullptr)
+            return pSwapChain->Present(SyncInterval, Flags);
+        return ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
+    }
+
+    const auto pacingStart = std::chrono::steady_clock::now();
     if (State::Instance().isShuttingDown)
     {
         if (pPresentParameters == nullptr)
@@ -358,6 +372,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         }
     }
 
+    const auto pacingDevice = std::chrono::steady_clock::now();
     auto fg = State::Instance().currentFG;
     if (willPresent && fg != nullptr)
         ReflexHooks::update(fg->IsActive(), false);
@@ -365,6 +380,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         ReflexHooks::update(false, false);
 
     XellHooks::update();
+    const auto pacingLatency = std::chrono::steady_clock::now();
 
     // Upscaler GPU time computation
     if (willPresent && (fg == nullptr || !fg->IsActive() || fg->IsPaused()))
@@ -489,6 +505,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         return presentResult;
     }
 
+    const auto pacingPrepared = std::chrono::steady_clock::now();
     if (willPresent)
     {
         // Tick feature to let it know if it's frozen
@@ -541,6 +558,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             State::Instance().scChanged = false;
     }
 
+    const auto pacingOverlay = std::chrono::steady_clock::now();
     LOG_DEBUG("Calling original present");
 
     // swapchain present
@@ -548,6 +566,16 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         presentResult = pSwapChain->Present(SyncInterval, Flags);
     else
         presentResult = ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
+
+    const auto pacingPresented = std::chrono::steady_clock::now();
+    const auto elapsedMs = [](auto a, auto b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    if (willPresent && elapsedMs(pacingStart, pacingPresented) >= 100.0)
+        LOG_WARN("LocalPresent stall: thread={} device={:.2f} latency={:.2f} prepare={:.2f} overlay={:.2f} driver={:.2f}ms sync={} flags={:X}",
+                 GetCurrentThreadId(), elapsedMs(pacingStart, pacingDevice), elapsedMs(pacingDevice, pacingLatency),
+                 elapsedMs(pacingLatency, pacingPrepared), elapsedMs(pacingPrepared, pacingOverlay),
+                 elapsedMs(pacingOverlay, pacingPresented), SyncInterval, Flags);
 
     if (presentResult == S_OK)
     {

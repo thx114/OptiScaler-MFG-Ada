@@ -53,26 +53,25 @@ bool IFeature_Dx11::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NGX_Par
     const UINT uavCount = Device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1
                               ? D3D11_1_UAV_SLOT_COUNT : D3D11_PS_CS_UAV_REGISTER_COUNT;
 
-    // backup compute shader resources
-    for (UINT i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; i++)
-    {
-        InDeviceContext->CSGetShaderResources(i, 1, restoreSRVs[i].GetAddressOf());
-    }
-
-    for (UINT i = 0; i < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; i++)
-    {
-        InDeviceContext->CSGetSamplers(i, 1, restoreSamplerStates[i].GetAddressOf());
-    }
-
-    for (UINT i = 0; i < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; i++)
-    {
-        InDeviceContext->CSGetConstantBuffers(i, 1, restoreCBVs[i].GetAddressOf());
-    }
-
-    for (UINT i = 0; i < uavCount; i++)
-    {
-        InDeviceContext->CSGetUnorderedAccessViews(i, 1, restoreUAVs[i].GetAddressOf());
-    }
+    // Batch the snapshot as well as the restore. Every getter may pass through
+    // third-party context hooks; per-slot calls unnecessarily multiply that cost.
+    // Getters AddRef each non-null entry, so Attach (not assignment) owns it.
+    ID3D11ShaderResourceView* savedSRVs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] {};
+    ID3D11SamplerState* savedSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] {};
+    ID3D11Buffer* savedCBVs[D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT] {};
+    ID3D11UnorderedAccessView* savedUAVs[D3D11_1_UAV_SLOT_COUNT] {};
+    InDeviceContext->CSGetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, savedSRVs);
+    InDeviceContext->CSGetSamplers(0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, savedSamplers);
+    InDeviceContext->CSGetConstantBuffers(0, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT, savedCBVs);
+    InDeviceContext->CSGetUnorderedAccessViews(0, uavCount, savedUAVs);
+    for (UINT i = 0; i < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++i)
+        restoreSRVs[i].Attach(savedSRVs[i]);
+    for (UINT i = 0; i < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++i)
+        restoreSamplerStates[i].Attach(savedSamplers[i]);
+    for (UINT i = 0; i < D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT; ++i)
+        restoreCBVs[i].Attach(savedCBVs[i]);
+    for (UINT i = 0; i < uavCount; ++i)
+        restoreUAVs[i].Attach(savedUAVs[i]);
 
     InDeviceContext->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, rawRTVs, restoreDSV.GetAddressOf());
 

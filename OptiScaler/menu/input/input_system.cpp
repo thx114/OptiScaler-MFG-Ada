@@ -219,6 +219,7 @@ void LogInputHealthSnapshotLocked(const char* origin)
 
     if (shouldLogHealth)
     {
+        LOG_DEBUG("{} low-level hook passthroughs:{}", origin, WindowsHookPassthroughCount());
 #if OPTIINPUT_VERBOSE_LOGGING
         LOG_DEBUG(
             "{} health frame:{} mode:{} target:{} targetPid:{} input:{} inputPid:{} explicitInput:{} externalTarget:{} "
@@ -730,6 +731,9 @@ void PollInputFallbackLocked()
 
 void ApplyMenuVisibilityChangeLocked(bool visible)
 {
+    // Stop bypassing before opening; resume only after close-time cleanup.
+    if (visible)
+        SetWindowsHookMenuVisible(true);
     const bool wasMenuVisible = _state.MenuVisible;
 
     _state.MenuVisible = visible;
@@ -771,6 +775,7 @@ void ApplyMenuVisibilityChangeLocked(bool visible)
         ResetRawInputBlockStateLocked();
         ResetRawInputSanitizeCacheLocked();
     }
+    SetWindowsHookMenuVisible(visible);
 }
 
 bool Initialize(const InitializeOptions& options)
@@ -916,6 +921,7 @@ void ResetStateAfterShutdown()
     _state.Focused = false;
 
     _state.MenuVisible = false;
+    SetWindowsHookMenuVisible(false);
     _state.BlockMouse = false;
     _state.BlockKeyboard = false;
     _state.BlockCursor = false;

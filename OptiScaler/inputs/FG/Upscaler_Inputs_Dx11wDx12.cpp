@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "Upscaler_Inputs_Dx11wDx12.h"
 
 #include <wrl/client.h>
@@ -136,23 +136,16 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     if (State::Instance().activeFgInput != FGInput::Upscaler || _dx12Device == nullptr)
         return;
 
-    if (feature->IsWithDx12())
-    {
-        const auto cacheFrameKey = Dx11WithDx12::GetLastPreparedUpscalerFrameId();
-
-        if (!ReusePreparedUpscalerCacheForFg(cacheFrameKey))
-            return;
-    }
-    else if (!PrepareFgResourceCache(InParameters, Dx11WithDx12::NextUpscalerFrameId()))
-    {
-        LOG_ERROR("Dx11wDx12 FG input cache preparation failed");
-        return;
-    }
-
     auto fg = State::Instance().currentFG;
 
     if (fg == nullptr)
         return;
+
+    if (!feature->IsWithDx12() && !fg->RetireSharedInputReads())
+    {
+        LOG_ERROR("Native DX11 FG cache reuse refused: previous GPU input reads have not retired");
+        return;
+    }
 
     FG_Constants fgConstants {};
     fgConstants.displayWidth = feature->DisplayWidth();
@@ -196,6 +189,21 @@ void UpscalerInputsDx11wDx12::UpscaleStart(NVSDK_NGX_Parameter* InParameters, IF
     if (State::Instance().isShuttingDown || !fg->IsActive() || !Config::Instance()->FGEnabled.value_or_default() ||
         State::Instance().currentSwapchain == nullptr)
     {
+        return;
+    }
+
+    // Keep EvaluateState and StartNewFrame above the active check: the ten-frame
+    // activation delay advances on input frames even while FG is inactive.
+    // Only guide copies and their shared-fence flush need an active consumer.
+    if (feature->IsWithDx12())
+    {
+        const auto cacheFrameKey = Dx11WithDx12::GetLastPreparedUpscalerFrameId();
+        if (!ReusePreparedUpscalerCacheForFg(cacheFrameKey))
+            return;
+    }
+    else if (!PrepareFgResourceCache(InParameters, Dx11WithDx12::NextUpscalerFrameId()))
+    {
+        LOG_ERROR("Dx11wDx12 FG input cache preparation failed");
         return;
     }
 

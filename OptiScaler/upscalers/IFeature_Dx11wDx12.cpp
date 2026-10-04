@@ -1,6 +1,7 @@
 ﻿#include <pch.h>
 #include "IFeature_Dx11wDx12.h"
 #include "NgxOptionalDx12Inputs.h"
+#include "Dx11ScreenSpaceGuideParams.h"
 
 #include <atomic>
 
@@ -13,6 +14,7 @@
 #include <with_dx12/with_dx12.h>
 
 using Microsoft::WRL::ComPtr;
+static_assert(DX11WDX12_NUM_OF_BUFFERS == Dx11ScreenSpaceGuides::SlotCount);
 
 void IFeature_Dx11wDx12::ResourceBarrier(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource,
                                          D3D12_RESOURCE_STATES beforeState, D3D12_RESOURCE_STATES afterState)
@@ -87,6 +89,16 @@ bool IFeature_Dx11wDx12::CreateD3D12Objects()
 
 void IFeature_Dx11wDx12::ReleaseSharedResources()
 {
+    // Retire clone textures/descriptors before destroying the bridge ring.
+    const auto retireFence = std::max(Dx12CommandAllocatorFenceValue[0], Dx12CommandAllocatorFenceValue[1]);
+    if (screenSpaceGuides && Dx12Fence && Dx12FenceEvent &&
+        Dx12Fence->GetCompletedValue() != UINT64_MAX && Dx12Fence->GetCompletedValue() < retireFence)
+    {
+        if (SUCCEEDED(Dx12Fence->SetEventOnCompletion(retireFence, Dx12FenceEvent)))
+            WaitForSingleObject(Dx12FenceEvent, INFINITE);
+    }
+    screenSpaceGuides.reset();
+    screenSpaceActiveLastFrame = false;
     for (size_t i = 0; i < DX11WDX12_NUM_OF_BUFFERS; i++)
     {
         SAFE_RELEASE(Dx12CommandList[i]);
@@ -411,6 +423,10 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
     bool dx12EvalResult = false;
     bool commandListRecording = false;
     bool commandListExecuted = false;
+    bool screenSpaceActive = false;
+    float originalMvScaleY = 1.0f, originalJitterY = 0.0f;
+    int originalReset = 0;
+    bool restoreScreenSpaceReset = false;
     do
     {
         if (!ProcessDx11Textures(InParameters))
@@ -434,6 +450,55 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         SetOptionalDx12Inputs(InParameters, dx11Exp.Dx12Resource, dx11Reactive.Dx12Resource, AutoExposure(),
                               Config::Instance()->DisableReactiveMask.value_or(false));
 
+        // RenoDX captures guides at NGX evaluate. Flip the complete DLSS input set;
+        // FG continues reading the original shared cache with its own ResourceFlip.
+        if (Config::Instance()->Dx11ScreenSpaceGuides.value_or_default() &&
+            dx12Feature->GetUpscalerType() == Upscaler::DLSS)
+        {
+            if (!screenSpaceGuides) screenSpaceGuides = std::make_unique<Dx11ScreenSpaceGuides>();
+            ID3D12Resource* sources[5] = { dx11Color.Dx12Resource, dx11Mv.Dx12Resource, dx11Depth.Dx12Resource,
+                Config::Instance()->DisableReactiveMask.value_or(false) ? nullptr : dx11Reactive.Dx12Resource,
+                dx11Out.Dx12Resource };
+            const auto prepareResult = PrepareDx11ScreenSpaceGuides(*screenSpaceGuides, _dx11on12Device,
+                static_cast<UINT>(frame), InParameters, sources, dx12Feature->RenderWidth(), dx12Feature->RenderHeight(),
+                dx12Feature->TargetWidth(), dx12Feature->TargetHeight(), originalMvScaleY, originalJitterY);
+            if (SUCCEEDED(prepareResult))
+            {
+                const char* names[] = { NVSDK_NGX_Parameter_Color, NVSDK_NGX_Parameter_MotionVectors,
+                    NVSDK_NGX_Parameter_Depth, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask,
+                    NVSDK_NGX_Parameter_Output };
+                for (UINT role = 0; role < Dx11ScreenSpaceGuides::RoleCount; ++role)
+                {
+                    if (!sources[role]) continue;
+                    auto r = static_cast<Dx11ScreenSpaceGuides::Role>(role);
+                    auto* clone = screenSpaceGuides->Get(static_cast<UINT>(frame), r);
+                    if (r != Dx11ScreenSpaceGuides::Output)
+                        screenSpaceGuides->Flip(cmdList, static_cast<UINT>(frame), r, sources[role], clone);
+                    InParameters->Set(names[role], static_cast<void*>(clone));
+                }
+                InParameters->Set(NVSDK_NGX_Parameter_MV_Scale_Y, -originalMvScaleY);
+                InParameters->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, -originalJitterY);
+                screenSpaceActive = true;
+                if (_frameCount % 300 == 0)
+                {
+                    auto d = sources[2]->GetDesc(), m = sources[1]->GetDesc();
+                    LOG_INFO("NR ScreenSpaceGuides active frame {} slot {}: depth {} -> {} {}x{} fmt {}, motion {} -> {} {}x{} fmt {}, MV.Scale.Y {} -> {}, jitterY {} -> {}",
+                        _frameCount, frame, static_cast<void*>(sources[2]), static_cast<void*>(screenSpaceGuides->Get(static_cast<UINT>(frame), Dx11ScreenSpaceGuides::Depth)),
+                        d.Width, d.Height, static_cast<unsigned>(d.Format), static_cast<void*>(sources[1]),
+                        static_cast<void*>(screenSpaceGuides->Get(static_cast<UINT>(frame), Dx11ScreenSpaceGuides::Motion)),
+                        m.Width, m.Height, static_cast<unsigned>(m.Format), originalMvScaleY, -originalMvScaleY, originalJitterY, -originalJitterY);
+                }
+            }
+            else if (_frameCount % 300 == 0)
+                LOG_WARN("NR ScreenSpaceGuides bypassed: unsupported extent/subrect/metadata/format or allocation failure {:X}; original inputs retained", static_cast<unsigned>(prepareResult));
+        }
+        if (screenSpaceActive != screenSpaceActiveLastFrame)
+        {
+            InParameters->Get(NVSDK_NGX_Parameter_Reset, &originalReset);
+            InParameters->Set(NVSDK_NGX_Parameter_Reset, 1);
+            restoreScreenSpaceReset = true;
+        }
+
         // DLAA / 1:1 ratio fast path: when the DLSS upscaler is asked to run at render-size == target-size
         // (DLAA, or a quality override that collapsed to 1:1), the NGX D3D12_EvaluateFeature call still
         // runs the full model internally even though no scaling is needed. On the Dx11wDx12 bridge that
@@ -447,7 +512,7 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         // a copy at 1:1 (sharpness/reactive), so leave those alone.
         // NR must enter the full pipeline so guide capture and RCAS still run.
         const bool dlssPassthrough1to1 =
-            !Config::Instance()->DlssNrEnabled.value_or_default() &&
+            !screenSpaceActive && !Config::Instance()->DlssNrEnabled.value_or_default() &&
             dx12Feature->GetUpscalerType() == Upscaler::DLSS &&
             !dx12Feature->SharpenEnabled() &&
             dx12Feature->RenderWidth() != 0 && dx12Feature->TargetWidth() != 0 &&
@@ -512,6 +577,10 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
             dx12EvalResult = dx12Feature->Evaluate(cmdList, InParameters, Dx12CommandQueue, _frameCount);
         }
 
+        if (dx12EvalResult && screenSpaceActive)
+            screenSpaceGuides->Flip(cmdList, static_cast<UINT>(frame), Dx11ScreenSpaceGuides::Output,
+                screenSpaceGuides->Get(static_cast<UINT>(frame), Dx11ScreenSpaceGuides::Output), dx11Out.Dx12Resource);
+
         // DLSS 5 Neural Rendering rides the bridge: at this moment the block carries the D3D12 copies
         // of every input, the list is still recording, and the model's edit lands on the D3D12 output
         // before it is copied back to the game's D3D11 texture. This one call is what makes the pass
@@ -527,6 +596,14 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
         }
 
     } while (false);
+
+    if (screenSpaceActive)
+    {
+        InParameters->Set(NVSDK_NGX_Parameter_MV_Scale_Y, originalMvScaleY);
+        InParameters->Set(NVSDK_NGX_Parameter_Jitter_Offset_Y, originalJitterY);
+    }
+    if (restoreScreenSpaceReset)
+        InParameters->Set(NVSDK_NGX_Parameter_Reset, originalReset);
 
     if (hasRestoreParamColor)
         InParameters->Set(NVSDK_NGX_Parameter_Color, (void*) restoreParamColor);
@@ -591,7 +668,10 @@ bool IFeature_Dx11wDx12::Evaluate(ID3D11DeviceContext* InDeviceContext, NVSDK_NG
     } while (false);
 
     if (evalResult)
+    {
+        screenSpaceActiveLastFrame = screenSpaceActive;
         _frameCount++;
+    }
     else
         Dx11WithDx12::ClearLastPreparedUpscalerFrameState();
 
