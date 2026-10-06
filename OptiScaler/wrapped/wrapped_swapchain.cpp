@@ -521,8 +521,9 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 DlssNr::ApplyToFinishedPictureDx11(pSwapChain);
         }
 
-        // Draw overlay
-        MenuOverlayDx::Present(pSwapChain, SyncInterval, Flags, pPresentParameters, pDevice, hWnd, isUWP);
+        // Draw overlay (deferred to DLSSG_Dx12::Present if depth debug is active so depth preview does not cover menu)
+        if (!State::Instance().fgDepthDebug)
+            MenuOverlayDx::Present(pSwapChain, SyncInterval, Flags, pPresentParameters, pDevice, hWnd, isUWP);
 
 #ifdef LOW_LATENCY_INPUTS
         if (State::Instance().activeFgOutput == FGOutput::FSRFG)

@@ -390,12 +390,12 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
 
     // Only the DX12 swapchain is visible; the hidden DX11 chain still runs addon Present work.
     // For a plain external DX12 presenter, draw Opti's overlay here.
-    // For a real FG swapchain, FGHooks::FGPresent/LocalPresent owns overlay/present-side work;
-    // drawing it here would double-enter the overlay path before the FG present hook.
-    if (!fgHookedPresenter)
+    // If FG depth debug is active, defer overlay drawing to DLSSG_Dx12::Present so depth preview does not cover the menu.
+    const bool skipOverlayHere = fgHookedPresenter || State::Instance().fgDepthDebug;
+    if (!skipOverlayHere)
         MenuOverlayDx::Present(_fgSwapChain, SyncInterval, Flags, nullptr, _dx12CommandQueue, _handle, false);
     else
-        LOG_TRACE("real FG presenter detected; skipping wrapper overlay path");
+        LOG_TRACE("real FG presenter or depth debug detected; skipping wrapper overlay path");
 
     LOG_DEBUG("frame {}, dx11Index {}, real3Index {}, fakeIndex {}, bufferCount {}", State::Instance().frameCount,
               dx11Index, _real3 != nullptr ? _real3->GetCurrentBackBufferIndex() : 0xFFFFFFFF, _currentFakeIndex,

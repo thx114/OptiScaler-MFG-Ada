@@ -1333,6 +1333,12 @@ bool DLSSG_Dx12::Present()
             _gameCommandQueue->Signal(_uiFence, _uiAllocatorFenceValues[fIndex]);
 
             _uiCommandListResetted[fIndex] = false;
+
+            // Draw OptiScaler overlay on top of depth debug view so depth visualization never covers the menu
+            if (debugState.fgDepthDebug && _swapChain != nullptr && _gameCommandQueue != nullptr)
+            {
+                MenuOverlayDx::Present(_swapChain, 0, 0, nullptr, _gameCommandQueue, _hwnd, false);
+            }
         }
 
         if (_scCommandListResetted[fIndex])
