@@ -1,4 +1,4 @@
-// The runner compiles the actual production hook methods with the real Streamline
+﻿// The runner compiles the actual production hook methods with the real Streamline
 // ABI. Only config/state, logging and the external runtime are substituted. No GPU.
 #define NOMINMAX
 #include <windows.h>
@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <mutex>
 #include <memory>
 #include <functional>
@@ -35,6 +36,7 @@ template <class T> struct Option : std::optional<T>
 struct Config
 {
     Option<int> FGDLSSGOverrideInterpolationCount;
+    Option<std::string> FGDLSSGAmpereMfgPreset;
     Option<bool> FGDLSSGOverrideForceDMFG;
     Option<float> FGDLSSGFramerateTargetDMFG;
     static Config* Instance()
@@ -373,6 +375,9 @@ int main()
            "a subsequent eligible options call must acknowledge the multiplier");
 
     Reset();
+    // Only a pre-2.11 wrapper without capability support is unsupported.
+    // Modern 2.11+ wrappers intentionally allow an explicit Dynamic trial.
+    State::Instance().streamlineVersion = { 2, 10, 0 };
     Config::Instance()->FGDLSSGOverrideForceDMFG = true;
     StreamlineHooks::updateDlssgOptions();
     StreamlineHooks::hkslDLSSGSetOptions(sl::ViewportHandle(0), options);
@@ -385,6 +390,16 @@ int main()
     StreamlineHooks::hkslDLSSGSetOptions(sl::ViewportHandle(0), options);
     Expect(submitted.mode == sl::DLSSGMode::eDynamic && !StreamlineHooks::dlssgOptionsState.Pending(),
            "supported Dynamic options must acknowledge the deferred request");
+
+    Reset();
+    State::Instance().streamlineVersion = { 2, 14, 0 };
+    Config::Instance()->FGDLSSGOverrideForceDMFG = true;
+    StreamlineHooks::updateDlssgOptions();
+    StreamlineHooks::hkslDLSSGSetOptions(sl::ViewportHandle(0), options);
+    Expect(submitted.mode==sl::DLSSGMode::eDynamic,
+           "modern wrapper permits explicit Dynamic trial without native advertising");
+    Expect(!StreamlineHooks::dlssgOptionsState.Pending(),
+           "successful modern Dynamic trial acknowledges saved intent");
 
     Reset();
     Config::Instance()->FGDLSSGFramerateTargetDMFG = 165.0f;

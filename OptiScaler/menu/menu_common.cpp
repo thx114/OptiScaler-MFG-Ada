@@ -1394,6 +1394,16 @@ struct MenuCommon::RenderMenuContext
 
 static std::string splashMessage;
 
+static bool MeasuredDlssgFpsReady()
+{
+    auto& state=State::Instance();
+    const auto stamp=state.dlssgFpsUpdatedMs.load();
+    const auto now=GetTickCount64();
+    return state.activeFgOutput==FGOutput::DLSSG && state.dlssgFpsValid.load() &&
+           stamp!=0 && now>=stamp && now-stamp<2000;
+}
+
+
 void MenuCommon::UpdateRenderTiming(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -1434,6 +1444,10 @@ void MenuCommon::UpdateRenderTiming(RenderMenuContext& ctx)
         frameRate = 1000.0 / frameTime;
     }
 
+    if (state.activeFgOutput==FGOutput::DLSSG) {
+        frameRate=MeasuredDlssgFpsReady()?state.dlssgSourceFps.load():0;
+        frameTime=frameRate>0?1000.0/frameRate:0;
+    }
     state.frameTimes.pop_front();
     state.frameTimes.push_back(frameTime);
 }
@@ -1808,8 +1822,12 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
             }
         }
 
-        frameTime /= frameCnt;
-        frameRate = 1000.0 / frameTime;
+        frameTime = frameCnt>0 ? frameTime/frameCnt : 0;
+        frameRate = frameTime>0 ? 1000.0/frameTime : 0;
+        if (state.activeFgOutput==FGOutput::DLSSG) {
+            frameRate=MeasuredDlssgFpsReady()?state.dlssgSourceFps.load():0;
+            frameTime=frameRate>0?1000.0/frameRate:0;
+        }
         frameTimesCalculated = true;
 
         float lastFT = static_cast<float>(state.frameTimes.empty() ? 0.0f : state.frameTimes.back());
@@ -1988,7 +2006,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             }
             else if (state.activeFgOutput == FGOutput::DLSSG && fg)
             {
-                fgText = formatFg("DLSSG", fg->GetMaxInterpolationCount());
+                fgText = formatFg("DLSSG requested", state.dlssgDetectedInterpolationCount);
             }
 
             const auto overlayType = config->FpsOverlayType.value_or_default();
@@ -2008,7 +2026,15 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
                                      usesDx12CompatLayer ? " w/Dx12" : "");
             }
 
-            if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
+            if (state.activeFgOutput==FGOutput::DLSSG)
+            {
+                if (MeasuredDlssgFpsReady())
+                    fpsPart=StrFmt(I18n::Tr("Source: %6.1f FPS | Presented: %6.1f FPS "),
+                        state.dlssgSourceFps.load(),state.dlssgPresentFps.load());
+                else
+                    fpsPart=I18n::Tr("FPS: waiting for measured source/presentation samples ");
+            }
+            else if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
             {
                 const double baseFps = frameRate / (double) (fg->GetInterpolatedFrameCount() + 1);
 
@@ -3061,7 +3087,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
             if (ImGui::Button(I18n::Tr("Apply Changes")))
             {
-                LOG_DEBUG("Applying DLSS/DLSSD preset override changes, preset index: {}",
+                LOG_INFO("Applying DLSS/DLSSD preset override changes, preset index: {}",
                           comboPreset.value_or_default());
 
                 if (usesDlssd)
@@ -3188,7 +3214,23 @@ void MenuCommon::RenderAdaMfgUnlock(RenderMenuContext& ctx)
 
         ShowHelpMarker(I18n::Tr("Unlocked 3X-6X otherwise blends every generated frame at the temporal midpoint, producing"" duplicate frames.\nRewrites the Ada (sm_89) interpolation PTX to use each frame's real time"" and forces JIT.\nSave Settings and restart after changing."));
 
+        bool quality=config->FGDLSSGMavisQuality.value_or_default();
+        if (ImGui::Checkbox(I18n::Tr("Mavis Local Stable quality (restart)"),&quality)) config->FGDLSSGMavisQuality=quality;
+        ShowHelpMarker("Exact-provider Blackwell kernels, validated warp blend, geometry edge guard."
+                       " Local Stable / V2 Compatibility only; no confidence history or CUDA interception."
+                       " Save and restart. Unsupported providers keep the existing timing correction.");
+        if (quality) {
+            bool warp=config->FGDLSSGMavisWarpBlend.value_or_default();
+            if (ImGui::Checkbox(I18n::Tr("Validated warp blend (restart)"),&warp)) config->FGDLSSGMavisWarpBlend=warp;
+            bool scatter=config->FGDLSSGMavisIntermediateScatter.value_or_default();
+            if (ImGui::Checkbox(I18n::Tr("Intermediate scatter retention (restart)"),&scatter)) config->FGDLSSGMavisIntermediateScatter=scatter;
+            int guard=config->FGDLSSGMavisBoundaryGuard.value_or_default();
+            if (ImGui::Combo(I18n::Tr("Boundary artifact guard (restart)"),&guard,
+                [](void*,int index)->const char* { const char* names[]={"Off","Balanced","Aggressive"}; return I18n::Tr(names[index]); },nullptr,3)) config->FGDLSSGMavisBoundaryGuard=guard;
+        }
+
         const auto status = MfgUnlock::LastStatus();
+        if (quality) ImGui::TextWrapped(I18n::Tr("Quality: %s"),status.QualityDetail.empty()?"Waiting for provider":status.QualityDetail.c_str());
         if (adaUnlock != adaEnabledForSession)
             ImGui::TextWrapped(I18n::Tr("Save Settings and restart to apply this change."));
         else if (!status.ModuleFound)
@@ -4090,6 +4132,25 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
     auto config = ctx.config;
+    if (state.activeFgOutput==FGOutput::DLSSG) {
+        int runtime=config->FGDLSSGRuntimeSelection.value_or_default();
+        if (ImGui::Combo(I18n::Tr("DLSSG runtime selection (restart)"),&runtime,
+            [](void*,int index)->const char* { const char* names[]={"Existing policy","Local provider","OTA provider"}; return I18n::Tr(names[index]); },nullptr,3))
+            config->FGDLSSGRuntimeSelection=runtime;
+        int mode=config->FGDLSSGInputQuality.value_or_default();
+        if (ImGui::Combo(I18n::Tr("DLSSG input quality"), &mode,
+            [](void*,int index)->const char* { const char* names[]={"Native","Automatic HUD/UI guard","Verified UI recomposition"}; return I18n::Tr(names[index]); },nullptr,3))
+            config->FGDLSSGInputQuality=mode;
+        ShowHelpMarker("Native preserves your HUD/UI tags. Automatic mode clears only incompatible optional separation tags; depth, motion and final color stay unchanged.");
+        int outputCap=config->FGDLSSGReflexOutputFpsCap.value_or_default();
+        if (ImGui::InputInt(I18n::Tr("Reflex output FPS cap (0 = native)"),&outputCap))
+            config->FGDLSSGReflexOutputFpsCap=outputCap==0?0:std::clamp(outputCap,10,1000);
+        ImGui::Text(I18n::Tr("Runtime presents since query: %u  status: 0x%X  Dynamic MFG: %s"),
+            state.dlssgActuallyPresented,state.dlssgObservedStatus,state.dlssgDynamicAvailable?"available":"not advertised");
+        float separation=config->FGDLSSGDepthSeparation.value_or_default();
+        if (ImGui::InputFloat(I18n::Tr("DLSSG depth edge separation (0 = native)"),&separation))
+            config->FGDLSSGDepthSeparation=std::clamp(separation,0.0f,1000.0f);
+    }
     auto& currentFeature = ctx.currentFeature;
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
@@ -8103,8 +8164,12 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
             }
         }
 
-        frameTime /= frameCnt;
-        frameRate = 1000.0 / frameTime;
+        frameTime = frameCnt>0 ? frameTime/frameCnt : 0;
+        frameRate = frameTime>0 ? 1000.0/frameTime : 0;
+        if (state.activeFgOutput==FGOutput::DLSSG) {
+            frameRate=MeasuredDlssgFpsReady()?state.dlssgSourceFps.load():0;
+            frameTime=frameRate>0?1000.0/frameRate:0;
+        }
     }
 
     ImGuiWindowFlags flags = 0;

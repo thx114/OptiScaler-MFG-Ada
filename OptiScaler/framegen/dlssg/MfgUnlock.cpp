@@ -1,10 +1,13 @@
-// Adapted from y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG, tag v4 (7b7220bb), GPL-3.0.
+﻿// Adapted from y4my4my4m/OptiScaler_DLSSNR_Multipass_MFG, tag v4 (7b7220bb), GPL-3.0.
 #include "pch.h"
 
 #if defined(OPTISCALER_RTX40_MFG)
 
 #include "MfgUnlock.h"
 #include "MfgMidpoint.h"
+#define MFGUNLOCK_LOCAL_LOW_OVERHEAD 1
+#include "mavis/blackwell.hpp"
+#include "mavis/thin_geometry.hpp"
 
 #include <Config.h>
 #include <State.h>
@@ -109,6 +112,9 @@ struct PathPatchSet
     void* midpointAllocation = nullptr; // process-lifetime VirtualAlloc, shared by all mappings of the file
     std::string midpointDetail;
     bool midpointApplied = false;
+    bool qualityApplied = false;
+    bool qualityTemporal = false;
+    std::string qualityDetail;
 };
 std::vector<PathPatchSet> g_patchSets;
 
@@ -541,6 +547,86 @@ bool ApplyCachedSet(HMODULE module, const PathPatchSet& set)
     return true;
 }
 
+// Upstream quality allocations deliberately share the provider's process lifetime.
+// Every patched provider is retained by g_patchedModules; cached descriptor pointers
+// must not outlive their replacement cubins/PTX. Never free them from DLL detach.
+struct MavisPolicy { bool enabled, warp, scatter; int guard; };
+const MavisPolicy& MavisSessionPolicy()
+{
+    const auto config=Config::Instance();
+    static const MavisPolicy policy {config->FGDLSSGMavisQuality.value_or_default(),
+        config->FGDLSSGMavisWarpBlend.value_or_default(),
+        config->FGDLSSGMavisIntermediateScatter.value_or_default(),
+        config->FGDLSSGMavisBoundaryGuard.value_or_default()};
+    return policy;
+}
+bool ApplyMavisQuality(HMODULE module, std::vector<Patch>& captured)
+{
+    using namespace mfgunlock;
+    auto config = Config::Instance();
+    const auto& policy=MavisSessionPolicy();
+    if (!policy.enabled) return false;
+    std::string checkedVersion, checkedReason;
+    if (!thingeometry::IsSupportedProvider(module,checkedVersion,checkedReason))
+    {
+        g_status.QualityDetail="Quality skipped: "+checkedReason+"; existing timing correction retained";
+        LOG_WARN("MFG quality: {}",g_status.QualityDetail);
+        return false;
+    }
+    blackwell::g_refinement_enabled = true;
+    blackwell::g_adaptive_quality_enabled = true;
+    blackwell::g_geometry_confidence_v2_enabled = true;
+    blackwell::g_adaptive_quality_profile = adaptivequality::Profile::kLuminanceDirectionalV3;
+    blackwell::g_adaptive_quality_v3_temporal_geometry = false;
+    blackwell::g_adaptive_quality_v3_inpaint_mode = 0; // upstream 1.4.1 V2 Compatibility
+    thingeometry::g_refinement_enabled = true;
+    thingeometry::g_adaptive_quality_enabled = true;
+    thingeometry::g_adaptive_quality_profile = adaptivequality::Profile::kLuminanceDirectionalV3;
+
+    std::vector<blackwell::Patch> kernels;
+    std::vector<void*> allocations;
+    blackwell::Result kernelResult;
+    std::string detail;
+    const auto guard = static_cast<blackwell::SilhouetteGuardMode>(policy.guard);
+    const bool blackwellApplied = blackwell::Apply(module, kernels, allocations, kernelResult, detail,
+        policy.scatter, guard, true);
+    for (const auto& patch : kernels)
+    {
+        Patch saved;
+        saved.address = patch.payload;
+        saved.original = patch.original;
+        saved.replacement.assign(patch.payload, patch.payload + patch.original.size());
+        saved.changed = true;
+        captured.push_back(std::move(saved));
+    }
+    // Descriptor redirects for oversized cubins are process-owned as well.
+    std::vector<thingeometry::Redirect> redirects;
+    thingeometry::Result warpResult;
+    std::string provider;
+    thingeometry::Options options;
+    options.validated_warp_blend = policy.warp;
+    // Previous-scatter is a separate experiment, not part of Local Stable defaults.
+    const bool warpApplied = thingeometry::Apply(module, options, redirects, warpResult, provider);
+    for (const auto& redirect : redirects)
+        for (const auto& descriptor : redirect.descriptors)
+        {
+            Patch saved;
+            saved.address = reinterpret_cast<uint8_t*>(descriptor.slot);
+            saved.original.resize(sizeof(uint64_t));
+            std::memcpy(saved.original.data(), &descriptor.original, sizeof(uint64_t));
+            saved.replacement.assign(saved.address, saved.address + sizeof(uint64_t));
+            saved.changed = true;
+            captured.push_back(std::move(saved));
+        }
+    g_status.QualityApplied = blackwellApplied || warpApplied;
+    g_status.QualityDetail = "Local Stable / V2 Compatibility: " + detail +
+        "; warp: " + warpResult.validated_warp_blend.detail;
+    LOG_INFO("MFG quality: {}; kernels={} warp={} geometryV={} inpaintV={}", g_status.QualityDetail,
+        kernelResult.kernels, warpApplied, static_cast<int>(kernelResult.adaptive_geometry_version),
+        static_cast<int>(kernelResult.adaptive_inpaint_version));
+    return blackwellApplied; // Blackwell mvec already has correct temporal slots.
+}
+
 // Makes an already-patched module the current target again. No bytes change; only the status
 // view and the retained-handle bookkeeping move. Switching used to reset and rebuild the whole
 // Status on every flip, which the menu diagnostics surfaced as a flickering detection.
@@ -563,8 +649,10 @@ void MakeCurrentRecorded(const ModuleRecord& record)
     if (set != g_patchSets.end())
     {
         g_status.KernelsRewritten = set->kernelContainers;
-        g_status.MidpointCorrected = set->midpointApplied;
+        g_status.MidpointCorrected = set->midpointApplied || set->qualityTemporal;
         g_status.MidpointDetail = set->midpointDetail;
+        g_status.QualityApplied = set->qualityApplied;
+        g_status.QualityDetail = set->qualityDetail;
     }
 
     if (switching)
@@ -752,7 +840,7 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     // The temporal fix uses the native sm_89 PTX; the Blackwell retarget would park that entry as
     // arch 122 and break the Ada-PTX lookup the redirect needs, so the two are mutually exclusive.
     const bool useMidpointFix = Config::Instance()->FGDLSSGAdaMidpointFix.value_or_default();
-    if (!useMidpointFix && Config::Instance()->FGDLSSGAdaBlackwellKernels.value_or_default() &&
+    if (!useMidpointFix && !MavisSessionPolicy().enabled && Config::Instance()->FGDLSSGAdaBlackwellKernels.value_or_default() &&
         !BuildKernelPlan(module, plan, kernelContainers))
     {
         ReleaseModuleReference(acquired);
@@ -788,7 +876,13 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
 
     // Temporal correction is best-effort after the gates are confirmed: a failed redirect leaves the
     // module at duplicate-frame behavior but never invalidates the gate unlock, so it is not fatal.
-    if (useMidpointFix)
+    const bool qualityTemporal = ApplyMavisQuality(module, plan);
+    if (qualityTemporal)
+    {
+        g_status.MidpointCorrected = true;
+        g_status.MidpointDetail = "exact Blackwell-to-Ada quality cubin, temporal slots preserved";
+    }
+    if (useMidpointFix && !qualityTemporal)
     {
         std::string detail;
         if (MfgMidpoint::Redirect(module, g_midpoint.patches, g_midpoint.allocation, detail))
@@ -810,6 +904,10 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     PathPatchSet set;
     set.path = path;
     set.kernelContainers = kernelContainers;
+    set.qualityApplied = g_status.QualityApplied;
+    set.qualityTemporal = qualityTemporal;
+    set.midpointDetail = g_status.MidpointDetail;
+    set.qualityDetail = g_status.QualityDetail;
     const auto* base = reinterpret_cast<const uint8_t*>(module);
     for (const auto& patch : plan)
     {

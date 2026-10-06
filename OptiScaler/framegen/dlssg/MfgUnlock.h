@@ -51,6 +51,8 @@ struct Status
     unsigned int KernelsRewritten = 0;
     bool MidpointCorrected = false; // temporal-kernel descriptors redirected to corrected fatbin
     std::string MidpointDetail;    // human-readable redirect result or failure reason
+    bool QualityApplied = false;
+    std::string QualityDetail;
     bool PatchFailed = false;    // an intended write/protection/cache operation failed
     bool RollbackFailed = false; // at least one original byte/protection/cache state could not be restored
     std::string SnippetVersion; // file version of nvngx_dlssg.dll, empty if it could not be read

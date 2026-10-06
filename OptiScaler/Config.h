@@ -809,6 +809,16 @@ class Config
     CustomOptional<bool> ExternalFrameGeneration { false };
     CustomOptional<bool> FGDLSSGAdaMfgUnlock { false };
     CustomOptional<bool> FGDLSSGAdaBlackwellKernels { true };
+    // MFGAdaUnlock-RenoDx quality integration; restart-scoped kernel changes.
+    CustomOptional<bool> FGDLSSGMavisQuality { false };
+    CustomOptional<bool> FGDLSSGMavisWarpBlend { true };
+    CustomOptional<bool> FGDLSSGMavisIntermediateScatter { true };
+    CustomOptional<int> FGDLSSGMavisBoundaryGuard { 1 }; // 0 off, 1 balanced, 2 aggressive
+    CustomOptional<int> FGDLSSGRuntimeSelection { 0 }; // 0 existing policy, 1 local, 2 OTA; restart
+    CustomOptional<int> FGDLSSGInputQuality { 0 }; // 0 Native, 1 Automatic Guard, 2 Verified UI recomposition
+    CustomOptional<int> FGDLSSGReflexOutputFpsCap { 0 }; // 0 native; 10..1000 output FPS
+    CustomOptional<float> FGDLSSGDepthSeparation { 0.0f }; // 0 keeps native constant
+
     // Corrects unlocked interpolation timing: without it every generated frame lands at the temporal
     // midpoint and shows as duplicate frames. Defaults on; only meaningful with the Ada MFG unlock.
     CustomOptional<bool> FGDLSSGAdaMidpointFix { true };

@@ -1,8 +1,10 @@
-#include "pch.h"
+﻿#include "pch.h"
 
 #include "DLSSG_Dx12.h"
 #include "DlssgPausePolicy.h"
 #include "Kcd2Hdr.h"
+#include "mavis/quality_guard.hpp"
+#include "mavis/pacing_policy.hpp"
 #if defined(OPTISCALER_RTX40_MFG)
 #include "MfgUnlock.h"
 #endif
@@ -171,6 +173,8 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
         _maxInterpolationCount = ResolveDlssgRuntimeMaximum(dlssgState.numFramesToGenerateMax);
         _runtimeReportedMaxInterpolation = static_cast<int>(dlssgState.numFramesToGenerateMax);
         _runtimeReportedStatus = static_cast<unsigned>(dlssgState.status);
+        _dynamicSupported = dlssgState.bIsDynamicMFGSupported==sl::Boolean::eTrue;
+        State::Instance().dlssgDynamicAvailable = _dynamicSupported;
         LOG_INFO("Max supported interpolations: {} status {:X}", dlssgState.numFramesToGenerateMax,
                  _runtimeReportedStatus);
 
@@ -292,6 +296,8 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
         _maxInterpolationCount = ResolveDlssgRuntimeMaximum(dlssgState.numFramesToGenerateMax);
         _runtimeReportedMaxInterpolation = static_cast<int>(dlssgState.numFramesToGenerateMax);
         _runtimeReportedStatus = static_cast<unsigned>(dlssgState.status);
+        _dynamicSupported = dlssgState.bIsDynamicMFGSupported==sl::Boolean::eTrue;
+        State::Instance().dlssgDynamicAvailable = _dynamicSupported;
         LOG_INFO("Max supported interpolations: {} status {:X}", dlssgState.numFramesToGenerateMax,
                  _runtimeReportedStatus);
 
@@ -689,12 +695,19 @@ bool DLSSG_Dx12::Dispatch()
     options.numFramesToGenerate = requestedFramesToInterpolate;
     options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
 
-    if (Config::Instance()->FGDLSSGForceDMFG.value_or_default())
+    if (!Config::Instance()->FGDLSSGForceDMFG.value_or_default()) _dynamicFailures=0;
+    if (Config::Instance()->FGDLSSGForceDMFG.value_or_default() && _dynamicFailures < 3)
     {
         options.mode = sl::DLSSGMode::eDynamic;
         options.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value_or_default();
     }
 
+    const int inputQuality=Config::Instance()->FGDLSSGInputQuality.value_or_default();
+    const auto colorSpace=state.outputColorSpace.dxgiColorSpace;
+    const bool hdrOutput=colorSpace==DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
+                         colorSpace==DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+    if (inputQuality==2 || (inputQuality==1 && !hdrOutput))
+        options.enableUserInterfaceRecomposition=sl::Boolean::eTrue;
     StreamlineHooks::applyMenuDlssgInterlock(options, true);
 
     // Only touch the runtime when something changed, plus a keepalive every 600 presents
@@ -703,6 +716,7 @@ bool DLSSG_Dx12::Dispatch()
     const bool dlssgOptionsChanged =
         !_dlssgOptionsValid || options.mode != _lastDlssgModeSent ||
         options.numFramesToGenerate != _lastDlssgNumSent ||
+        options.enableUserInterfaceRecomposition != _lastUiRecomposition ||
         (options.mode == sl::DLSSGMode::eDynamic && options.dynamicTargetFrameRate != _lastDlssgDynamicTargetSent);
     const bool dlssgKeepaliveDue =
         _dlssgOptionsValid && (_fgFramePresentId - _dlssgOptionsSentAtPresent) >= kOptionsKeepalivePresents;
@@ -714,6 +728,12 @@ bool DLSSG_Dx12::Dispatch()
                  magic_enum::enum_name(options.mode), options.numFramesToGenerate, options.structVersion,
                  State::Instance().externalFrameGeneration, dlssgKeepaliveDue && !dlssgOptionsChanged);
         dlssgSetOptionsResult = StreamlineProxy::DLSSGSetOptions()(viewport, options);
+        if (dlssgSetOptionsResult!=sl::Result::eOk && options.mode==sl::DLSSGMode::eDynamic) {
+            ++_dynamicFailures;
+            LOG_WARN("Dynamic MFG rejected, attempt {}/3; preserving saved choice, trying fixed MFG",_dynamicFailures);
+            options.mode=sl::DLSSGMode::eOn; options.dynamicTargetFrameRate=0;
+            dlssgSetOptionsResult=StreamlineProxy::DLSSGSetOptions()(viewport,options);
+        }
         // "num" is our request, not the runtime's acceptance. The runtime clamps
         // numFramesToGenerate to its own numFramesToGenerateMax and still returns eOk, so a
         // request above the effective maximum silently drops back to 2x. Reading it as
@@ -731,6 +751,7 @@ bool DLSSG_Dx12::Dispatch()
             _lastDlssgModeSent = options.mode;
             _lastDlssgNumSent = options.numFramesToGenerate;
             _lastDlssgDynamicTargetSent = options.dynamicTargetFrameRate;
+            _lastUiRecomposition = options.enableUserInterfaceRecomposition;
             _dlssgOptionsValid = true;
             _dlssgOptionsSentAtPresent = _fgFramePresentId;
         }
@@ -744,7 +765,10 @@ bool DLSSG_Dx12::Dispatch()
         return false;
 
     const bool markers = ReflexHooks::gameIsSendingMarkers();
-    const bool reflexChanged = !_reflexOptionsValid || markers != _lastReflexMarkersSent;
+    const auto outputCap=Config::Instance()->FGDLSSGReflexOutputFpsCap.value_or_default();
+    const uint32_t reflexLimit=mfgunlock::pacing::IsValidReflexOutputFpsCap(outputCap) ?
+        mfgunlock::pacing::TargetFpsToFrameLimitUs(outputCap) : 0;
+    const bool reflexChanged = !_reflexOptionsValid || markers != _lastReflexMarkersSent || reflexLimit != _lastReflexLimit;
     const bool reflexKeepaliveDue =
         _reflexOptionsValid && (_fgFramePresentId - _reflexOptionsSentAtPresent) >= kOptionsKeepalivePresents;
 
@@ -753,6 +777,7 @@ bool DLSSG_Dx12::Dispatch()
         sl::ReflexOptions reflexConst = {};
         reflexConst.mode = sl::ReflexMode::eLowLatency;
         reflexConst.useMarkersToOptimize = markers;
+        reflexConst.frameLimitUs = reflexLimit;
 
         auto reflexSetOptionsResult = StreamlineProxy::ReflexSetOptions()(reflexConst);
 
@@ -764,6 +789,7 @@ bool DLSSG_Dx12::Dispatch()
         else
         {
             _lastReflexMarkersSent = markers;
+            _lastReflexLimit = reflexLimit;
             _reflexOptionsValid = true;
             _reflexOptionsSentAtPresent = _fgFramePresentId;
         }
@@ -930,6 +956,12 @@ bool DLSSG_Dx12::Dispatch()
         return false;
     }
 
+    const auto separation = Config::Instance()->FGDLSSGDepthSeparation.value_or_default();
+    if (_lastInputQuality>=0 && (inputQuality!=_lastInputQuality || separation!=_lastDepthSeparation))
+        constData.reset=sl::Boolean::eTrue;
+    _lastInputQuality=inputQuality; _lastDepthSeparation=separation;
+    if (separation > 0 && std::isfinite(separation) && separation <= 1000)
+        constData.minRelativeLinearDepthObjectSeparation = separation;
     auto result = StreamlineProxy::SetConstants()(constData, *frameToken, viewport);
     if (result != sl::Result::eOk)
     {
@@ -958,7 +990,35 @@ void* DLSSG_Dx12::FrameGenerationContext() { return (void*) 0x13371337; }
 
 void* DLSSG_Dx12::SwapchainContext() { return (void*) 0x23372337; }
 
-DLSSG_Dx12::~DLSSG_Dx12() { Shutdown(); }
+DLSSG_Dx12::~DLSSG_Dx12() {
+    if (State::Instance().currentFG==static_cast<IFGFeature*>(this))
+        State::Instance().dlssgFpsValid.store(false);
+    Shutdown();
+}
+
+void DLSSG_Dx12::ObservePresentation()
+{
+    ++_sourcePresentCount;
+    const uint64_t now=GetTickCount64();
+    if (_lastPresentationQueryAt && now-_lastPresentationQueryAt<250) return;
+    _lastPresentationQueryAt=now;
+    if (!StreamlineProxy::DLSSGGetState()) return;
+    sl::DLSSGState observed;
+    if (StreamlineProxy::DLSSGGetState()(viewport,observed,nullptr)!=sl::Result::eOk) return;
+    auto& state=State::Instance();
+    const auto rates=_fpsWindow.Observe(now,_sourcePresentCount,observed.numFramesActuallyPresented);
+    state.dlssgSourceFps.store(rates.source);
+    state.dlssgPresentFps.store(rates.present);
+    state.dlssgFpsUpdatedMs.store(rates.updatedMs);
+    state.dlssgFpsValid.store(rates.valid);
+    state.dlssgActuallyPresented=observed.numFramesActuallyPresented;
+    state.dlssgObservedStatus=static_cast<unsigned>(observed.status);
+    _dynamicSupported=observed.bIsDynamicMFGSupported==sl::Boolean::eTrue;
+    state.dlssgDynamicAvailable=_dynamicSupported;
+    static uint64_t samples=0;
+    if (++samples%300==0) LOG_INFO("MFG telemetry: requested={} reportedSinceLastQuery={} status={:X} dynamicSupported={}",
+        _lastDlssgNumSent+1,state.dlssgActuallyPresented,state.dlssgObservedStatus,_dynamicSupported);
+}
 
 bool DLSSG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
 
@@ -1302,7 +1362,7 @@ bool DLSSG_Dx12::Present()
             debugState.fgDepthDebugAvailable = _depthDebug->Draw(_device, cmd, fIndex, depth->GetResource(),
                 depth->state, target.Get(), static_cast<UINT>(depth->width), depth->height,
                 depth->left, depth->top, debugState.fgDepthDebugGain, debugState.fgDepthDebugInvert,
-                debugState.fgDepthDebugEnhanced);
+                debugState.fgDepthDebugEnhanced, !Config::Instance()->OverlayMenu.value_or_default());
             static unsigned debugLogCounter = 0;
             if (debugLogCounter++ % 120 == 0 && depth->GetResource())
             {
@@ -1334,11 +1394,6 @@ bool DLSSG_Dx12::Present()
 
             _uiCommandListResetted[fIndex] = false;
 
-            // Draw OptiScaler overlay on top of depth debug view so depth visualization never covers the menu
-            if (debugState.fgDepthDebug && _swapChain != nullptr && _gameCommandQueue != nullptr)
-            {
-                MenuOverlayDx::Present(_swapChain, 0, 0, nullptr, _gameCommandQueue, _hwnd, false);
-            }
         }
 
         if (_scCommandListResetted[fIndex])
@@ -1354,6 +1409,10 @@ bool DLSSG_Dx12::Present()
             _scCommandListResetted[fIndex] = false;
         }
     }
+
+    if (debugState.fgDepthDebug && Config::Instance()->OverlayMenu.value_or_default() &&
+        _swapChain && _gameCommandQueue)
+        MenuOverlayDx::Present(_swapChain, 0, 0, nullptr, _gameCommandQueue, _hwnd, false);
 
     if (inputGapProtection)
     {
@@ -1594,6 +1653,44 @@ bool DLSSG_Dx12::SetResource(Dx12Resource* inputResource)
         resourceTag.extent.top = fResource->top;
         resourceTag.extent.width = (uint32_t) fResource->width;
         resourceTag.extent.height = fResource->height;
+
+        // Guard only optional HUD/UI tags. Required depth, motion and final color
+        // are untouched, and Native (default) preserves the existing integration.
+        if (Config::Instance()->FGDLSSGInputQuality.value_or_default()!=0 &&
+            mfgunlock::qualityguard::IsHudSeparationType(resourceTag.type) && _swapChain)
+        {
+            Microsoft::WRL::ComPtr<IDXGISwapChain3> chain;
+            Microsoft::WRL::ComPtr<ID3D12Resource> output;
+            if (SUCCEEDED(_swapChain->QueryInterface(IID_PPV_ARGS(&chain))) &&
+                SUCCEEDED(chain->GetBuffer(chain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&output))))
+            {
+                const auto desc=output->GetDesc();
+                mfgunlock::qualityguard::OutputDescription description {
+                    static_cast<uint32_t>(desc.Width),desc.Height,static_cast<uint32_t>(desc.Format)};
+                DXGI_COLOR_SPACE_TYPE colorSpace=State::Instance().outputColorSpace.dxgiColorSpace;
+                const bool hdr=colorSpace==DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 ||
+                               colorSpace==DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709;
+                sl::Resource guardResource=resource;
+                const auto inputDesc=fResource->GetResource()->GetDesc();
+                guardResource.nativeFormat=static_cast<uint32_t>(inputDesc.Format);
+                guardResource.width=static_cast<uint32_t>(inputDesc.Width);guardResource.height=inputDesc.Height;
+                sl::ResourceTag guardTag=resourceTag;guardTag.resource=&guardResource;
+                // Explicit UI composition assumes the user verified HDR transfer;
+                // structural validation still applies in every mode.
+                const bool automaticHdr=hdr && Config::Instance()->FGDLSSGInputQuality.value_or_default()==1;
+                const auto assessment=mfgunlock::qualityguard::AssessTags(&guardTag,1,automaticHdr,description,
+                    mfgunlock::qualityguard::FormatApi::kDxgi);
+                if (assessment.suppress_hud_separation)
+                {
+                    // Clear a previous tag on transitions rather than leave stale
+                    // separation resources behind in Streamline.
+                    resourceTag.resource=nullptr;
+                    static uint32_t logged=0;
+                    if (logged++<8) LOG_WARN("MFG quality guard: cleared optional HUD/UI tag {}, issues={:X}",
+                        static_cast<int>(resourceTag.type),assessment.issues);
+                }
+            }
+        }
 
         int indexDiff = GetIndex() - fIndex;
         if (indexDiff < 0)

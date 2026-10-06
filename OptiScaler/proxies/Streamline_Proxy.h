@@ -407,6 +407,16 @@ class StreamlineProxy
         }
 
         _isD3D12Requested = true;
+        const int runtimeSelection=Config::Instance()->FGDLSSGRuntimeSelection.value_or_default();
+        if (runtimeSelection==1) {
+            pref.flags &= ~sl::PreferenceFlags::eAllowOTA;
+            pref.flags &= ~sl::PreferenceFlags::eLoadDownloadedPlugins;
+        } else if (runtimeSelection==2) {
+            pref.flags |= sl::PreferenceFlags::eAllowOTA;
+            pref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
+        }
+        LOG_INFO("MFG runtime selection: mode={} preferenceFlags={:X}; restart-scoped",
+            runtimeSelection,static_cast<uint64_t>(pref.flags));
         auto initResult = StreamlineProxy::Init()(pref, sl::kSDKVersion);
 
         State::EnableChecks(owner);
@@ -463,6 +473,16 @@ class StreamlineProxy
         pref.flags |= sl::PreferenceFlags::eUseManualHooking;
         pref.flags |= sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 
+        const int runtimeSelection=Config::Instance()->FGDLSSGRuntimeSelection.value_or_default();
+        if (runtimeSelection==1) {
+            pref.flags &= ~sl::PreferenceFlags::eAllowOTA;
+            pref.flags &= ~sl::PreferenceFlags::eLoadDownloadedPlugins;
+        } else if (runtimeSelection==2) {
+            pref.flags |= sl::PreferenceFlags::eAllowOTA;
+            pref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
+        }
+        LOG_INFO("MFG runtime selection: mode={} preferenceFlags={:X}; restart-scoped",
+            runtimeSelection,static_cast<uint64_t>(pref.flags));
         auto initResult = StreamlineProxy::Init()(pref, sl::kSDKVersion);
 
         if (initResult == sl::Result::eOk)

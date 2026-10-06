@@ -1,12 +1,25 @@
-# OptiScaler MFG Ada 0.1.6 — FG-only / DLSS5 Companion
+﻿# OptiScaler MFG Ada 0.2.0 — FG-only / DLSS5 Companion
 
 面向原生 DLSS 的帧生成版本，可与外部 **RenoDX DLSS5 Neural Rendering 插件**配合使用。
 
 **0.1.6 已移除 Opt 内置 NR 功能。** Opt 负责原生 DLSS 接入和 FG/MFG；神经渲染由外部 DLSS5 插件负责。Opt 不再提供 NR、模型、多 pass、皮肤调节或 NR 成片处理界面，也不加载内置 NR 处理链。
 
-[下载 0.1.6](https://github.com/thx114/OptiScaler-MFG-Ada/releases/tag/mfg-ada-0.1.6) · [发布说明](docs/RELEASE-0.1.6.md) · [反馈问题](https://github.com/thx114/OptiScaler-MFG-Ada/issues)
+[下载 0.2.0](https://github.com/thx114/OptiScaler-MFG-Ada/releases/tag/mfg-ada-0.2.0) · [发布说明](docs/RELEASE-0.2.0.md) · [反馈问题](https://github.com/thx114/OptiScaler-MFG-Ada/issues)
 
-## 本版变化
+## 0.2.0 变化与验证范围
+
+- 并入 MFGAdaUnlock-RenoDx 的 Local Stable 几何与 V2 Compatibility inpaint、warp 混合和边缘保护；精确运行库匹配，默认关闭，保存并重启后生效。
+- 增加 DLSSG 输入质量保护、Reflex 输出上限及本地/OTA 运行库选择；默认保留原有行为。
+- 修正 `OverlayMenu=false` 时深度调试图覆盖 Opt 菜单的绘制路径；不强制重启 ReShade 点击拦截。
+- 修正 DLSS/DLSSD 模型重建时借用参数表的释放策略，以及旧 feature 退休时误销毁共用菜单的问题。
+- FPS 区分实测源帧提交率与运行库呈现率，不使用请求倍数推算基础帧数；呈现计数可能含生成/重复画面，不等于物理屏幕独立画面。
+- 继续保留原神 native NR guide 对齐、CPU 输入读取退休同步、菜单/resize 保护。
+
+**0.2.0 的代码构建、CPU 回归、WARP GPU 回读、真实 DLSSG DLL 镜像补丁/恢复已验证；应用模型、游戏兼容、深度菜单交互和画质/帧率改善仍需要实机回归。** FSR Bridge 的皮肤标记实验不属于本次 Opt 发布。历史成功案例不能代替本版验收。
+
+完整功能范围与未迁移项见 [集成说明](docs/MAVIS-INTEGRATION-20261006.md)。源码不提交本地 NVIDIA 派生 payload 表；无表构建会回退，不宣称启用了 Blackwell 质量内核。发布 DLL 含针对本地验证的 310.9.1 provider 生成的表。
+
+## 历史 FG-only 基础功能
 
 - 仅帧生成模式：保留原生 DX11/DX12 DLSS，不再使用 W12 超分作为本版后端。DX11 游戏的 DX11→DX12 **FG 桥接仍然保留**。
 - 兼容外部 DLSS5 插件的“呈现 / Present”模式：在插件完成处理后、原生交换链翻转前捕获画面交给 FG。
@@ -16,7 +29,7 @@
 - 保留帧生成倍率及运行设置，保留崩铁 DX11 的软暂停路径。
 - **禁用 Opt 内置在线更新检测**：不启动检测线程、不向上游版本接口发出请求。请从本仓库手动更新。
 
-## 验证范围
+## 历史 0.1.6 验证记录（非 0.2.0 实机验收）
 
 | 游戏 / 路径 | 状态 |
 | --- | --- |
@@ -56,7 +69,13 @@ Visual Studio 2022 C++ 工具链、Windows SDK，初始化仓库所需子模块�
 
 ```powershell
 MSBuild.exe OptiScaler.sln /p:Configuration=Release /p:Platform=x64 /p:OptiScalerFgOnly=true /t:OptiScaler /m:1
-.\package_fg_only.ps1 -Version 0.1.6
+.\package_fg_only.ps1 -Version 0.2.0
+```
+
+质量 payload 表可从自己安装的 NVIDIA provider 生成（不下载/修改原 DLL）：
+
+```powershell
+python tools/mavis_quality/generate.py --ptxas 'C:\Path\ptxas.exe' --provider 'D:\Path\nvngx_dlssg.dll'
 ```
 
 本分支默认构建 FG-only。历史 NR 实现仍保留在源树中供维护和参考；“移除 NR”指 **0.1.6 发布产品不再提供或启用该功能**，并非宣称删除了所有历史源码。旧版 NR 文档不适用于此发布，见 [历史 README](docs/LEGACY-NR-README.md)。

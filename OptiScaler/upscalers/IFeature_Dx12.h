@@ -18,6 +18,7 @@ class IFeature_Dx12 : public virtual IFeature
   protected:
     ID3D12Device* Device = nullptr;
     static inline std::unique_ptr<Menu_Dx12> Imgui = nullptr;
+    inline static Microsoft::WRL::ComPtr<ID3D12Device> ImguiDevice;
     std::unique_ptr<OS_Dx12> OutputScaler = nullptr;
     std::unique_ptr<RCAS_Dx12> RCAS = nullptr;
     std::unique_ptr<Bias_Dx12> Bias = nullptr;

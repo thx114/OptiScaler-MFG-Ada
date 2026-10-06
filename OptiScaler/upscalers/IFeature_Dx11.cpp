@@ -1,4 +1,4 @@
-#include <pch.h>
+﻿#include <pch.h>
 #include "IFeature_Dx11.h"
 #include <State.h>
 
@@ -25,8 +25,15 @@ bool IFeature_Dx11::Init(ID3D11Device* InDevice, ID3D11DeviceContext* InContext,
 
     if (result)
     {
-        if (!Config::Instance()->OverlayMenu.value_or_default() && (Imgui == nullptr || Imgui.get() == nullptr))
-            Imgui = std::make_unique<Menu_Dx11>(Util::GetProcessWindow(), InDevice);
+        if (!Config::Instance()->OverlayMenu.value_or_default()) {
+            if (ImguiDevice.Get()!=InDevice) {
+                // Only the render/init thread owns menu replacement. Retain the
+                // device independently of old model/feature lifetime.
+                Imgui.reset();
+                ImguiDevice=InDevice;
+            }
+            if (!Imgui) Imgui=std::make_unique<Menu_Dx11>(Util::GetProcessWindow(),InDevice);
+        }
 
         OutputScaler = std::make_unique<OS_Dx11>("Output Scaling", InDevice, (TargetWidth() < DisplayWidth()));
         RCAS = std::make_unique<RCAS_Dx11>("RCAS", InDevice);
@@ -381,7 +388,8 @@ IFeature_Dx11::~IFeature_Dx11()
     if (State::Instance().isShuttingDown)
         return;
 
-    Imgui.reset();
+    // Imgui is shared across feature instances. Model replacement destroys
+    // this old feature on a delayed worker; never tear down the new menu here.
     OutputScaler.reset();
     RCAS.reset();
     Bias.reset();

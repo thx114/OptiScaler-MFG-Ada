@@ -1,4 +1,4 @@
-# Credits
+﻿# Credits
 
 This fork builds on [Dagherbou/OptiScaler_DLSSNR](https://github.com/Dagherbou/OptiScaler_DLSSNR) and [OptiScaler](https://github.com/optiscaler/OptiScaler). OptiScaler began with [PotatoOfDoom's CyberFSR2](https://github.com/PotatoOfDoom/CyberFSR2).
 
@@ -26,3 +26,9 @@ This project uses [FreeType](https://gitlab.freedesktop.org/freetype/freetype), 
 Upstream credits [SignPath.io](https://signpath.io/) for Windows code signing and the [SignPath Foundation](https://signpath.org/) for its certificate.
 
 Support upstream: [cdozdil](https://github.com/sponsors/cdozdil?frequency=one-time) and [nitec](https://buymeacoffee.com/nitec).
+
+## MFGAdaUnlock-RenoDx integration (0.2.0)
+
+The quality and input-validation helpers are adapted from [mavismmg/MFGAdaUnlock-RenoDx](https://github.com/mavismmg/MFGAdaUnlock-RenoDx), upstream commit `a2ca96f3eacebf0bec5e25f07f15b46fbf3a0aef`, authored by ImDreamt under MIT. License retained in [MFGAdaUnlock-RenoDx-MIT.txt](../Licenses/MFGAdaUnlock-RenoDx-MIT.txt) and alongside the vendored headers.
+
+The upstream project credits dashdogy for temporal correction and Matias Lombo for Blackwell/Ada kernel rebuild research. Generated CUDA payloads come from locally installed NVIDIA providers; original NVIDIA DLSS/Streamline DLLs are not included in this FG-only archive. Integration scope, fallback and test limits: [MAVIS-INTEGRATION-20261006.md](MAVIS-INTEGRATION-20261006.md).

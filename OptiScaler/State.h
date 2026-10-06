@@ -10,6 +10,7 @@
 #include <set>
 #include <deque>
 #include <mutex>
+#include <atomic>
 #include <sl_dlss_g.h>
 #include <vulkan/vulkan.h>
 #include <ankerl/unordered_dense.h>
@@ -190,6 +191,12 @@ class State
     bool fgPresentIsCalled = false;
     bool fgOnlyGenerated = false;
     bool fgHudlessCompare = false;
+    std::atomic<double> dlssgSourceFps{0}, dlssgPresentFps{0};
+    std::atomic<bool> dlssgFpsValid{false};
+    std::atomic<uint64_t> dlssgFpsUpdatedMs{0};
+    unsigned dlssgActuallyPresented = 0;
+    unsigned dlssgObservedStatus = 0;
+    bool dlssgDynamicAvailable = false;
     bool fgDepthDebug = false;
     bool fgDepthDebugInvert = false;
     bool fgDepthDebugEnhanced = true;

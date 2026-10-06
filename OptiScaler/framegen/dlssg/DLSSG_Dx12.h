@@ -2,6 +2,7 @@
 
 #include <framegen/IFGFeature_Dx12.h>
 #include "FgDepthDebug.h"
+#include <framegen/FrameRateWindow.h>
 
 #include <proxies/Streamline_Proxy.h>
 
@@ -63,6 +64,15 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     uint64_t _dlssgOptionsSentAtPresent = 0;
 
     bool _lastReflexMarkersSent = false;
+    uint32_t _lastReflexLimit = 0;
+    sl::Boolean _lastUiRecomposition = sl::Boolean::eFalse;
+    int _lastInputQuality = -1;
+    float _lastDepthSeparation = -1;
+    unsigned _dynamicFailures = 0;
+    bool _dynamicSupported = false;
+    uint64_t _lastPresentationQueryAt = 0;
+    FrameRateWindow _fpsWindow;
+    uint64_t _sourcePresentCount = 0; // only successful client Present calls, excludes SL worker generated calls
     bool _reflexOptionsValid = false;
     uint64_t _reflexOptionsSentAtPresent = 0;
 
@@ -94,6 +104,7 @@ class DLSSG_Dx12 : public virtual IFGFeature_Dx12
     void EvaluateState(ID3D12Device* device, FG_Constants& fgConstants) override final;
 
     bool Present() override final;
+    void ObservePresentation() override final; // only called from the serialized Present thread
 
     bool SetResource(Dx12Resource* inputResource) override final;
     void SetCommandQueue(FG_ResourceType type, ID3D12CommandQueue* queue) override final;

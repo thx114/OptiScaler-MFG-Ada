@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include <dlssnr/DlssNr.h>
 #include "FG_Hooks.h"
 #include <Config.h>
@@ -1284,6 +1284,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     else
         result = o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
 
+    if (willPresent && SUCCEEDED(result) && fg && state.activeFgOutput==FGOutput::DLSSG)
+        fg->ObservePresentation();
     const auto pacingPresented = std::chrono::steady_clock::now();
     if (result == S_OK)
     {

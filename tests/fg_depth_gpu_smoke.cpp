@@ -19,6 +19,7 @@ void transition(ID3D12GraphicsCommandList* c,ID3D12Resource* r,D3D12_RESOURCE_ST
 }
 int main(int argc, char**) {try {
  const bool enhanced = argc > 1;
+ const bool preserveMenu = argc > 2;
  auto input = [&](UINT i, UINT x, UINT y) {
   if (!enhanced) return float(1+i+x+y)/100;
   const float values[] = {0.f, 1e-8f, 1.f, -0.1f, std::numeric_limits<float>::quiet_NaN(), 0.001f};
@@ -58,7 +59,21 @@ int main(int argc, char**) {try {
   s.cmd->CopyTextureRegion(&dst,0,0,0,&src,nullptr);transition(s.cmd.Get(),s.depth.Get(),D3D12_RESOURCE_STATE_COPY_DEST,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
   require(!view.Draw(d.Get(),s.cmd.Get(),4,s.depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,s.target.Get(),32,16,0,0,1,false));
   require(!view.Draw(d.Get(),s.cmd.Get(),i,s.depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,s.target.Get(),33,16,0,0,1,false));
-  require(view.Draw(d.Get(),s.cmd.Get(),i,s.depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,s.target.Get(),17+i,7+i,2,3,i==3?2.f:1.f,i>=2,enhanced));
+  if (preserveMenu) {
+   ComPtr<ID3D12DescriptorHeap> rtvHeap;
+   D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.Type=D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors=1;
+   check(d->CreateDescriptorHeap(&hd,IID_PPV_ARGS(&rtvHeap)));
+   d->CreateRenderTargetView(s.target.Get(),nullptr,rtvHeap->GetCPUDescriptorHandleForHeapStart());
+   transition(s.cmd.Get(),s.target.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_RENDER_TARGET);
+   const float menuColor[]={0,1,0,1};
+   s.cmd->ClearRenderTargetView(rtvHeap->GetCPUDescriptorHandleForHeapStart(),menuColor,0,nullptr);
+   transition(s.cmd.Get(),s.target.Get(),D3D12_RESOURCE_STATE_RENDER_TARGET,D3D12_RESOURCE_STATE_COMMON);
+   // Shader only accesses descriptors at recording time here.
+   DepthDebugMenuRegions::Snapshot regions; regions.updated=GetTickCount64();
+   DepthDebugMenuRegions::Add(regions,{0,.0f,.25f,.5f});
+   DepthDebugMenuRegions::Store(regions);
+  }
+  require(view.Draw(d.Get(),s.cmd.Get(),i,s.depth.Get(),D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,s.target.Get(),17+i,7+i,2,3,i==3?2.f:1.f,i>=2,enhanced,preserveMenu));
   desc=s.target->GetDesc();d->GetCopyableFootprints(&desc,0,1,0,&s.footprint,nullptr,nullptr,&bytes);
   s.readback=buffer(bytes,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_STATE_COPY_DEST);
   transition(s.cmd.Get(),s.target.Get(),D3D12_RESOURCE_STATE_COMMON,D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -82,6 +97,7 @@ int main(int argc, char**) {try {
     else if(raw==1) {rgb[0]=1;rgb[1]=1;rgb[2]=0;}
     else if(raw<0||raw>1) {rgb[0]=1;rgb[1]=0;rgb[2]=0;}
    }
+   if (preserveMenu && x<8 && y<8) {rgb[0]=0;rgb[1]=1;rgb[2]=0;}
    auto* p=(unsigned char*)data+y*s.footprint.Footprint.RowPitch+x*4;
    for(UINT c=0;c<3;c++) require(std::abs(int(p[c])-int(std::round(rgb[c]*255)))<=1);
    require(p[3]==255);

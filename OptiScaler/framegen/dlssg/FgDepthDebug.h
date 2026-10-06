@@ -1,10 +1,11 @@
-#pragma once
+﻿#pragma once
 #include <d3d12.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <array>
 #include <map>
 #include <cstring>
+#include "DepthDebugMenuRegions.h"
 
 // Diagnostic only. Descriptors are indexed by the owner's fence-protected UI
 // slot; constants are embedded in the command list, not a mutable upload buffer.
@@ -23,13 +24,17 @@ class FgDepthDebug
         const char* code = R"(
 Texture2D<float> depthTex : register(t0);
 cbuffer Params : register(b0) { uint width; uint height; uint left; uint top;
-                              float gain; uint inverted; uint enhanced; };
+                              float gain; uint inverted; uint enhanced; uint menuCount; float4 menuRects[8]; };
 struct V { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 V VSMain(uint id : SV_VertexID) {
     V o; o.uv=float2((id<<1)&2,id&2);
     o.pos=float4(o.uv*float2(2,-2)+float2(-1,1),0,1); return o;
 }
 float4 PSMain(V i) : SV_Target {
+    for (uint n=0;n<menuCount;++n) {
+        float4 r=menuRects[n];
+        if (all(i.uv>=r.xy) && all(i.uv<=r.zw)) discard;
+    }
     uint2 p=min(uint2(saturate(i.uv)*float2(width,height)),uint2(width-1,height-1));
     float d=depthTex.Load(int3(p+uint2(left,top),0));
     if (!isfinite(d)) return float4(1,0,1,1);
@@ -56,7 +61,7 @@ float4 PSMain(V i) : SV_Target {
         params[0].ParameterType=D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[0].DescriptorTable={1,&range}; params[0].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;
         params[1].ParameterType=D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[1].Constants={0,0,7}; params[1].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;
+        params[1].Constants={0,0,40}; params[1].ShaderVisibility=D3D12_SHADER_VISIBILITY_PIXEL;
         D3D12_ROOT_SIGNATURE_DESC desc {2,params,0,nullptr,D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT};
         if (FAILED(D3D12SerializeRootSignature(&desc,D3D_ROOT_SIGNATURE_VERSION_1,&serialized,&errors))) return false;
         ComPtr<ID3D12RootSignature> ready;
@@ -80,7 +85,7 @@ public:
     // Caller must fence this slot before reuse and retain source/target until GPU completion.
     bool Draw(ID3D12Device* device, ID3D12GraphicsCommandList* cmd, UINT slotIndex,
               ID3D12Resource* depth, D3D12_RESOURCE_STATES depthState, ID3D12Resource* target,
-              UINT width, UINT height, UINT left, UINT top, float gain, bool invert, bool enhanced = false)
+              UINT width, UINT height, UINT left, UINT top, float gain, bool invert, bool enhanced = false, bool preserveFallbackMenu = false)
     {
         if (!device || !cmd || !depth || !target || slotIndex>=slots.size() || !width || !height) return false;
         const auto dd=depth->GetDesc(), td=target->GetDesc();
@@ -112,8 +117,15 @@ public:
         cmd->SetGraphicsRootSignature(root.Get()); cmd->SetPipelineState(pipeline.Get());
         auto* heap=slot.srv.Get(); cmd->SetDescriptorHeaps(1,&heap);
         cmd->SetGraphicsRootDescriptorTable(0,slot.srv->GetGPUDescriptorHandleForHeapStart());
-        struct Params { UINT w,h,l,t; float gain; UINT inverted,enhanced; } values {width,height,left,top,gain,invert?1u:0u,enhanced?1u:0u};
-        cmd->SetGraphicsRoot32BitConstants(1,7,&values,0);
+        struct Params { UINT w,h,l,t; float gain; UINT inverted,enhanced,menuCount;
+                        std::array<DepthDebugMenuRegions::Rect,8> menuRects; };
+        Params values {width,height,left,top,gain,invert?1u:0u,enhanced?1u:0u,0,{}};
+        if (preserveFallbackMenu) {
+            const auto menu=DepthDebugMenuRegions::Read(GetTickCount64());
+            values.menuCount=menu.count; values.menuRects=menu.rects;
+        }
+        static_assert(sizeof(Params)==40*sizeof(UINT));
+        cmd->SetGraphicsRoot32BitConstants(1,40,&values,0);
         D3D12_VIEWPORT viewport {0,0,float(td.Width),float(td.Height),0,1};
         D3D12_RECT rect {0,0,LONG(td.Width),LONG(td.Height)};
         cmd->RSSetViewports(1,&viewport); cmd->RSSetScissorRects(1,&rect);

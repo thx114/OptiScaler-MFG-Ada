@@ -35,8 +35,15 @@ bool IFeature_Dx12::Init(ID3D12Device* InDevice, ID3D12GraphicsCommandList* InCo
 
     if (result)
     {
-        if (!Config::Instance()->OverlayMenu.value_or_default() && (Imgui == nullptr || Imgui.get() == nullptr))
-            Imgui = std::make_unique<Menu_Dx12>(Util::GetProcessWindow(), InDevice);
+        if (!Config::Instance()->OverlayMenu.value_or_default()) {
+            if (ImguiDevice.Get()!=InDevice) {
+                // Only the render/init thread owns menu replacement. Retain the
+                // device independently of old model/feature lifetime.
+                Imgui.reset();
+                ImguiDevice=InDevice;
+            }
+            if (!Imgui) Imgui=std::make_unique<Menu_Dx12>(Util::GetProcessWindow(),InDevice);
+        }
 
         OutputScaler = std::make_unique<OS_Dx12>("Output Scaling", InDevice, (TargetWidth() < DisplayWidth()));
         RCAS = std::make_unique<RCAS_Dx12>("RCAS", InDevice);
@@ -467,7 +474,8 @@ IFeature_Dx12::~IFeature_Dx12()
     if (State::Instance().isShuttingDown)
         return;
 
-    Imgui.reset();
+    // Imgui is shared across feature instances. Model replacement destroys
+    // this old feature on a delayed worker; never tear down the new menu here.
     OutputScaler.reset();
     RCAS.reset();
     Bias.reset();

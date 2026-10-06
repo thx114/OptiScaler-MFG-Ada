@@ -1,4 +1,4 @@
-#include <pch.h>
+﻿#include <pch.h>
 #include "FeatureProvider_Dx11.h"
 
 #include "Util.h"
@@ -159,6 +159,15 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
                                        state.newBackend == Upscaler::DLSS_on12;
 
             contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::DX11, false);
+            contextData->ownsCreateParams = !isPassthrough;
+            if (!contextData->createParams) {
+                LOG_ERROR("Model rebuild cancelled: no create parameters; retaining current feature");
+                contextData->ownsCreateParams=false;
+                contextData->changeBackendCounter=0;
+                state.changeBackend[handleId]=false;
+                state.newBackend=Upscaler::Reset;
+                return false;
+            }
             contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
@@ -185,8 +194,9 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
 
             if (contextData->createParams != nullptr)
             {
-                TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D11_DestroyParameters());
-                contextData->createParams = nullptr;
+                ReleaseRebuildParameters(contextData, [](NVSDK_NGX_Parameter* params) {
+                    TryDestroyNGXParameters(params, NVNGXProxy::D3D11_DestroyParameters());
+                });
             }
 
             contextData->changeBackendCounter = 0;
@@ -215,6 +225,16 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
     if (contextData->changeBackendCounter == 3)
     {
         // then init and continue
+        if (!contextData->feature || !contextData->createParams) {
+            LOG_ERROR("Rebuild initialization refused: feature or parameters unavailable");
+            contextData->changeBackendCounter=0;
+            state.changeBackend[handleId]=false;
+            state.newBackend=Upscaler::Reset;
+            ReleaseRebuildParameters(contextData, [](NVSDK_NGX_Parameter* params) {
+                TryDestroyNGXParameters(params, NVNGXProxy::D3D11_DestroyParameters());
+            });
+            return false;
+        }
         auto initResult = contextData->feature->Init(device, devContext, contextData->createParams);
 
         if (cfg.Dx11DelayedInit.value_or_default())
@@ -259,12 +279,9 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
         }
 
         // if opti nvparam release it
-        int optiParam = 0;
-        if (contextData->createParams->Get("OptiScaler", &optiParam) == NVSDK_NGX_Result_Success && optiParam == 1)
-        {
-            TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D11_DestroyParameters());
-            contextData->createParams = nullptr;
-        }
+        ReleaseRebuildParameters(contextData, [](NVSDK_NGX_Parameter* params) {
+            TryDestroyNGXParameters(params, NVNGXProxy::D3D11_DestroyParameters());
+        });
     }
 
     // if initial feature can't be inited

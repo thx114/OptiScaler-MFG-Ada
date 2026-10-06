@@ -1,4 +1,4 @@
-#include "pch.h"
+﻿#include "pch.h"
 #include "FeatureProvider_Dx12.h"
 
 #include "Util.h"
@@ -129,6 +129,15 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS;
 
             contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::DX12, false);
+            contextData->ownsCreateParams = !isPassthrough;
+            if (!contextData->createParams) {
+                LOG_ERROR("Model rebuild cancelled: no create parameters; retaining current feature");
+                contextData->ownsCreateParams=false;
+                contextData->changeBackendCounter=0;
+                state.changeBackend[handleId]=false;
+                state.newBackend=Upscaler::Reset;
+                return false;
+            }
             contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
@@ -157,8 +166,9 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
 
             if (contextData->createParams != nullptr)
             {
-                TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D12_DestroyParameters());
-                contextData->createParams = nullptr;
+                ReleaseRebuildParameters(contextData, [](NVSDK_NGX_Parameter* params) {
+                    TryDestroyNGXParameters(params, NVNGXProxy::D3D12_DestroyParameters());
+                });
             }
 
             contextData->changeBackendCounter = 0;
@@ -187,6 +197,16 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     // init feature
     if (contextData->changeBackendCounter == 3)
     {
+        if (!contextData->feature || !contextData->createParams) {
+            LOG_ERROR("Rebuild initialization refused: feature or parameters unavailable");
+            contextData->changeBackendCounter=0;
+            state.changeBackend[handleId]=false;
+            state.newBackend=Upscaler::Reset;
+            ReleaseRebuildParameters(contextData, [](NVSDK_NGX_Parameter* params) {
+                TryDestroyNGXParameters(params, NVNGXProxy::D3D12_DestroyParameters());
+            });
+            return false;
+        }
         auto initResult = contextData->feature->Init(device, cmdList, contextData->createParams);
 
         contextData->changeBackendCounter = 0;
@@ -234,13 +254,9 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
         }
 
         // If this is an OptiScaler fake NVNGX param table, delete it
-        int optiParam = 0;
-
-        if (contextData->createParams->Get("OptiScaler", &optiParam) == NVSDK_NGX_Result_Success && optiParam == 1)
-        {
-            TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D12_DestroyParameters());
-            contextData->createParams = nullptr;
-        }
+        ReleaseRebuildParameters(contextData, [](NVSDK_NGX_Parameter* params) {
+            TryDestroyNGXParameters(params, NVNGXProxy::D3D12_DestroyParameters());
+        });
     }
 
     // if initial feature can't be inited

@@ -71,6 +71,31 @@ bool Config::Reload(std::filesystem::path iniPath)
             ExternalFrameGeneration.set_from_config(readBool("FrameGen", "External"));
             FGDLSSGAdaMfgUnlock.set_from_config(readBool("DLSSG", "AdaMfgUnlock"));
             FGDLSSGAdaBlackwellKernels.set_from_config(readBool("DLSSG", "AdaBlackwellKernels"));
+            FGDLSSGMavisQuality.set_from_config(readBool("DLSSG", "MavisQuality"));
+            FGDLSSGMavisWarpBlend.set_from_config(readBool("DLSSG", "MavisWarpBlend"));
+            FGDLSSGMavisIntermediateScatter.set_from_config(readBool("DLSSG", "MavisIntermediateScatter"));
+            FGDLSSGMavisBoundaryGuard.set_from_config(readInt("DLSSG", "MavisBoundaryGuard"));
+            if (FGDLSSGMavisBoundaryGuard.has_value() &&
+                (FGDLSSGMavisBoundaryGuard.value() < 0 || FGDLSSGMavisBoundaryGuard.value() > 2))
+                FGDLSSGMavisBoundaryGuard.reset();
+            FGDLSSGRuntimeSelection.set_from_config(readInt("DLSSG", "RuntimeSelection"));
+            if (FGDLSSGRuntimeSelection.has_value() &&
+                (FGDLSSGRuntimeSelection.value()<0 || FGDLSSGRuntimeSelection.value()>2))
+                FGDLSSGRuntimeSelection.reset();
+            FGDLSSGInputQuality.set_from_config(readInt("DLSSG", "InputQuality"));
+            if (FGDLSSGInputQuality.has_value() &&
+                (FGDLSSGInputQuality.value() < 0 || FGDLSSGInputQuality.value() > 2))
+                FGDLSSGInputQuality.reset();
+            FGDLSSGReflexOutputFpsCap.set_from_config(readInt("DLSSG", "ReflexOutputFpsCap"));
+            if (FGDLSSGReflexOutputFpsCap.has_value() && FGDLSSGReflexOutputFpsCap.value()!=0 &&
+                (FGDLSSGReflexOutputFpsCap.value()<10 || FGDLSSGReflexOutputFpsCap.value()>1000))
+                FGDLSSGReflexOutputFpsCap.reset();
+            FGDLSSGDepthSeparation.set_from_config(readFloat("DLSSG", "DepthSeparation"));
+            if (FGDLSSGDepthSeparation.has_value() &&
+                (!std::isfinite(FGDLSSGDepthSeparation.value()) ||
+                 FGDLSSGDepthSeparation.value() < 0 || FGDLSSGDepthSeparation.value() > 1000))
+                FGDLSSGDepthSeparation.reset();
+
             FGDLSSGAmpereMfgUnlock.set_from_config(readBool("DLSSG", "AmpereMfgUnlock"));
             FGDLSSGAmpereMfgMaxFrames.set_from_config(readInt("DLSSG", "AmpereMfgMaxFrames"));
             if (FGDLSSGAmpereMfgMaxFrames.has_value() &&
@@ -1126,6 +1151,14 @@ bool Config::SaveIni()
         ini.SetValue("FrameGen", "External", GetBoolValue(Instance()->ExternalFrameGeneration.value_for_config_or(false) || ampereUnlock).c_str());
         ini.SetValue("DLSSG", "AdaMfgUnlock", GetBoolValue(adaUnlock).c_str());
         ini.SetValue("DLSSG", "AdaBlackwellKernels", GetBoolValue(Instance()->FGDLSSGAdaBlackwellKernels.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "MavisQuality", GetBoolValue(Instance()->FGDLSSGMavisQuality.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "MavisWarpBlend", GetBoolValue(Instance()->FGDLSSGMavisWarpBlend.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "MavisIntermediateScatter", GetBoolValue(Instance()->FGDLSSGMavisIntermediateScatter.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "MavisBoundaryGuard", GetIntValue(Instance()->FGDLSSGMavisBoundaryGuard.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "RuntimeSelection", GetIntValue(Instance()->FGDLSSGRuntimeSelection.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "InputQuality", GetIntValue(Instance()->FGDLSSGInputQuality.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "ReflexOutputFpsCap", GetIntValue(Instance()->FGDLSSGReflexOutputFpsCap.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "DepthSeparation", GetFloatValue(Instance()->FGDLSSGDepthSeparation.value_for_config()).c_str());
         ini.SetValue("DLSSG", "AmpereMfgUnlock", GetBoolValue(ampereUnlock).c_str());
         ini.SetValue("DLSSG", "AmpereMfgMaxFrames", GetIntValue(Instance()->FGDLSSGAmpereMfgMaxFrames.value_for_config()).c_str());
         ini.SetValue("DLSSG", "AmpereMfgKernelImage", Instance()->FGDLSSGAmpereMfgKernelImage.value_for_config_or("auto").c_str());
