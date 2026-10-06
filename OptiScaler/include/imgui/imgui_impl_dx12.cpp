@@ -1,3 +1,4 @@
+#include "Config.h"
 // dear imgui: Renderer Backend for DirectX12
 // This needs to be used along with a Platform Backend (e.g. Win32)
 
@@ -204,6 +205,10 @@ static void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, ID3D12Graphic
         float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
         float T = draw_data->DisplayPos.y;
         float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
+        const bool flipY = Config::Instance()->MenuFlipY.value_or_default();
+        if (flipY)
+            std::swap(T, B);
+
         float mvp[4][4] =
         {
             { 2.0f/(R-L),   0.0f,           0.0f,       0.0f },
@@ -390,8 +395,16 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandL
                 if (clip_max.x <= clip_min.x || clip_max.y <= clip_min.y)
                     continue;
 
-                // Apply scissor/clipping rectangle
-                const D3D12_RECT r = { (LONG)clip_min.x, (LONG)clip_min.y, (LONG)clip_max.x, (LONG)clip_max.y };
+                D3D12_RECT r;
+                if (Config::Instance()->MenuFlipY.value_or_default())
+                {
+                    const float fbHeight = draw_data->DisplaySize.y * clip_scale.y;
+                    r = { (LONG)clip_min.x, (LONG)(fbHeight - clip_max.y), (LONG)clip_max.x, (LONG)(fbHeight - clip_min.y) };
+                }
+                else
+                {
+                    r = { (LONG)clip_min.x, (LONG)clip_min.y, (LONG)clip_max.x, (LONG)clip_max.y };
+                }
                 command_list->RSSetScissorRects(1, &r);
 
                 // Bind texture, Draw

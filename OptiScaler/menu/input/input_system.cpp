@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include "Config.h"
 #include "input_system_internal.h"
 
 #include <include/imgui/imgui.h>
@@ -1285,7 +1286,13 @@ void FeedImGui(bool menuVisible)
     AddKey(ImGuiKey_LeftAlt, VK_LMENU);
     AddKey(ImGuiKey_RightAlt, VK_RMENU);
 
-    io.AddMousePosEvent(static_cast<float>(_state.MouseClientPos.x), static_cast<float>(_state.MouseClientPos.y));
+    float mousePosX = static_cast<float>(_state.MouseClientPos.x);
+    float mousePosY = static_cast<float>(_state.MouseClientPos.y);
+    if (Config::Instance()->MenuFlipY.value_or_default() && io.DisplaySize.y > 0.0f)
+    {
+        mousePosY = io.DisplaySize.y - mousePosY;
+    }
+    io.AddMousePosEvent(mousePosX, mousePosY);
 
     if (_state.MouseWheel != 0.0f)
         io.AddMouseWheelEvent(0.0f, _state.MouseWheel);

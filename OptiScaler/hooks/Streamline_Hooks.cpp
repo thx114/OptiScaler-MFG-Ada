@@ -1267,6 +1267,20 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         targetOverrideApplied = true;
     }
 
+    // Apply DLSS-G Preset A / B (enableUserInterfaceRecomposition)
+    if (newOptions.structVersion >= 4)
+    {
+        const std::string fgPreset = Config::Instance()->FGDLSSGAmpereMfgPreset.value_or("Auto");
+        if (fgPreset == "A" || fgPreset == "a")
+        {
+            newOptions.enableUserInterfaceRecomposition = sl::Boolean::eFalse;
+        }
+        else if (fgPreset == "B" || fgPreset == "b")
+        {
+            newOptions.enableUserInterfaceRecomposition = sl::Boolean::eTrue;
+        }
+    }
+
     applyMenuDlssgInterlock(newOptions, dlssgPotentiallyActive);
 
     LOG_TRACE("DLSSG Modified Mode: {}", magic_enum::enum_name(newOptions.mode));

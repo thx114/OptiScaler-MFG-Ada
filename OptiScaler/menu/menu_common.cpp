@@ -3180,6 +3180,21 @@ void MenuCommon::RenderAdaMfgUnlock(RenderMenuContext& ctx)
         bool adaMidpoint = config->FGDLSSGAdaMidpointFix.value_or_default();
         if (ImGui::Checkbox(I18n::Tr("Fix interpolation timing (no duplicate frames, restart)"), &adaMidpoint))
             config->FGDLSSGAdaMidpointFix = adaMidpoint;
+
+        // UI Recomposition Preset for DLSS-G / Ada MFG
+        const char* presetOptions[] = { "Auto (Game / Profile default)", "Preset A (Force UI recomposition off)", "Preset B (Force UI recomposition on)" };
+        std::string currentPreset = config->FGDLSSGAmpereMfgPreset.value_or("Auto");
+        int presetIdx = (currentPreset == "A" || currentPreset == "a") ? 1 :
+                        (currentPreset == "B" || currentPreset == "b") ? 2 : 0;
+        if (ImGui::Combo(I18n::Tr("DLSS-G Preset (Recomposition)##ada"), &presetIdx, presetOptions, 3))
+        {
+            const char* storedPresetOptions[] = { "Auto", "A", "B" };
+            config->FGDLSSGAmpereMfgPreset = std::string(storedPresetOptions[presetIdx]);
+        }
+        ShowHelpMarker(I18n::Tr("DLSS-G 3.7+ / 310.9 preset for HUD recomposition:\n"
+                                "Auto: Game or profile default.\n"
+                                "Preset A: Force UI recomposition off (standard optical flow interpolation).\n"
+                                "Preset B: Force UI recomposition on (cleaner HUD, reduces ghosting if game tags UI)."));
         ShowHelpMarker(I18n::Tr("Unlocked 3X-6X otherwise blends every generated frame at the temporal midpoint, producing"" duplicate frames.\nRewrites the Ada (sm_89) interpolation PTX to use each frame's real time"" and forces JIT.\nSave Settings and restart after changing."));
 
         const auto status = MfgUnlock::LastStatus();
@@ -7697,6 +7712,13 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
             config->MenuLanguage = std::string(kLanguageValues[langIndex]);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(I18n::Tr("Menu display language. Auto follows the system language.\nTakes effect immediately; the font refreshes on the next frame."));
+        ImGui::SameLine(0.0f, 15.0f);
+
+        bool flipY = config->MenuFlipY.value_or_default();
+        if (ImGui::Checkbox(I18n::Tr("Flip Menu Y##flip_y"), &flipY))
+            config->MenuFlipY = flipY;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(I18n::Tr("Flip menu upside down for DX11-to-DX12 interop swapchains"));
         ImGui::SameLine(0.0f, 15.0f);
     }
 

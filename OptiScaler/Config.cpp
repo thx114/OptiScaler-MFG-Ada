@@ -687,6 +687,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // Don't enable again if set false because of Linux issue
             OverlayMenu.set_from_config(readBool("Menu", "OverlayMenu"));
+            MenuFlipY.set_from_config(readBool("Menu", "FlipY"));
             ShortcutKey.set_from_config(readInt("Menu", "ShortcutKey"));
             ExtendedLimits.set_from_config(readBool("Menu", "ExtendedLimits"));
             ShowFps.set_from_config(readBool("Menu", "ShowFps"));
@@ -1642,6 +1643,7 @@ bool Config::SaveIni()
     {
         ini.SetValue("Menu", "Scale", GetFloatValue(Instance()->MenuScale).c_str());
         ini.SetValue("Menu", "OverlayMenu", GetBoolValue(Instance()->OverlayMenu.value_for_config()).c_str());
+        ini.SetValue("Menu", "FlipY", GetBoolValue(Instance()->MenuFlipY.value_for_config()).c_str());
 
         auto setting = Instance()->ShortcutKey.value_for_config();
         ini.SetValue("Menu", "ShortcutKey",
