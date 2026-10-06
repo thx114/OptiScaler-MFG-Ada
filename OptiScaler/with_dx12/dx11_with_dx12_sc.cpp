@@ -795,17 +795,19 @@ bool Dx11wDx12SC::_InitInteropObjects()
             return false;
         }
 
-        if (_sharedDx11BackBufferCopies.size() != _bufferCount)
-            _sharedDx11BackBufferCopies.resize(_bufferCount, nullptr);
+        const UINT interopRingCount = std::max<UINT>(_bufferCount != 0 ? _bufferCount * 2 : 4, 4);
 
-        if (_openedDx11BackBuffers.size() != _bufferCount)
-            _openedDx11BackBuffers.resize(_bufferCount, nullptr);
+        if (_sharedDx11BackBufferCopies.size() != interopRingCount)
+            _sharedDx11BackBufferCopies.resize(interopRingCount, nullptr);
 
-        if (_sharedBackBufferHandles.size() != _bufferCount)
-            _sharedBackBufferHandles.resize(_bufferCount, nullptr);
+        if (_openedDx11BackBuffers.size() != interopRingCount)
+            _openedDx11BackBuffers.resize(interopRingCount, nullptr);
 
-        if (_openedDx11BackBufferStates.size() != _bufferCount)
-            _openedDx11BackBufferStates.resize(_bufferCount, D3D12_RESOURCE_STATE_COMMON);
+        if (_sharedBackBufferHandles.size() != interopRingCount)
+            _sharedBackBufferHandles.resize(interopRingCount, nullptr);
+
+        if (_openedDx11BackBufferStates.size() != interopRingCount)
+            _openedDx11BackBufferStates.resize(interopRingCount, D3D12_RESOURCE_STATE_COMMON);
 
         return true;
     }
@@ -820,7 +822,7 @@ bool Dx11wDx12SC::_InitInteropObjects()
 
     HRESULT result = S_OK;
 
-    const UINT copyAllocatorCount = std::max<UINT>(_bufferCount != 0 ? _bufferCount : 3, 3);
+    const UINT copyAllocatorCount = std::max<UINT>(_bufferCount != 0 ? _bufferCount * 2 : 4, 4);
 
     // Dedicated COMPUTE queue for interop copies (see _copyQueue doc in the header).
     if (_copyQueue == nullptr)
@@ -965,19 +967,21 @@ bool Dx11wDx12SC::_RequestSharedBackBuffer(UINT index)
         return false;
     }
 
-    if (_sharedDx11BackBufferCopies.size() <= index)
-        _sharedDx11BackBufferCopies.resize(_bufferCount, nullptr);
+    const UINT interopRingCount = std::max<UINT>(_bufferCount != 0 ? _bufferCount * 2 : 4, 4);
 
-    if (_openedDx11BackBuffers.size() <= index)
-        _openedDx11BackBuffers.resize(_bufferCount, nullptr);
+    if (_sharedDx11BackBufferCopies.size() < interopRingCount)
+        _sharedDx11BackBufferCopies.resize(interopRingCount, nullptr);
 
-    if (_sharedBackBufferHandles.size() <= index)
-        _sharedBackBufferHandles.resize(_bufferCount, nullptr);
+    if (_openedDx11BackBuffers.size() < interopRingCount)
+        _openedDx11BackBuffers.resize(interopRingCount, nullptr);
 
-    if (_openedDx11BackBufferStates.size() <= index)
-        _openedDx11BackBufferStates.resize(_bufferCount, D3D12_RESOURCE_STATE_COMMON);
+    if (_sharedBackBufferHandles.size() < interopRingCount)
+        _sharedBackBufferHandles.resize(interopRingCount, nullptr);
 
-    if (_openedDx11BackBuffers[_currentFakeIndex] != nullptr)
+    if (_openedDx11BackBufferStates.size() < interopRingCount)
+        _openedDx11BackBufferStates.resize(interopRingCount, D3D12_RESOURCE_STATE_COMMON);
+
+    if (_currentFakeIndex < _openedDx11BackBuffers.size() && _openedDx11BackBuffers[_currentFakeIndex] != nullptr)
         return true;
 
     // Read Dx11 sc backbuffer
@@ -1368,4 +1372,8 @@ UINT Dx11wDx12SC::_GetDx11BackBufferIndexForPresent() const
     return _bufferCount > 0 ? _currentFakeIndex : 0;
 }
 
-void Dx11wDx12SC::_AdvanceFakeBackBufferIndex() { _currentFakeIndex = (_currentFakeIndex + 1) % _bufferCount; }
+void Dx11wDx12SC::_AdvanceFakeBackBufferIndex()
+{
+    const UINT ringCount = _sharedDx11BackBufferCopies.size() != 0 ? static_cast<UINT>(_sharedDx11BackBufferCopies.size()) : 4;
+    _currentFakeIndex = (_currentFakeIndex + 1) % ringCount;
+}
