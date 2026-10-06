@@ -1,3 +1,4 @@
+#include "State.h"
 #include "Config.h"
 // dear imgui: Renderer Backend for DirectX12
 // This needs to be used along with a Platform Backend (e.g. Win32)
@@ -205,7 +206,7 @@ static void ImGui_ImplDX12_SetupRenderState(ImDrawData* draw_data, ID3D12Graphic
         float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
         float T = draw_data->DisplayPos.y;
         float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-        const bool flipY = Config::Instance()->MenuFlipY.value_or_default();
+        const bool flipY = Config::Instance()->MenuFlipY.value_or(State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12);
         if (flipY)
             std::swap(T, B);
 
@@ -396,7 +397,7 @@ void ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandL
                     continue;
 
                 D3D12_RECT r;
-                if (Config::Instance()->MenuFlipY.value_or_default())
+                if (Config::Instance()->MenuFlipY.value_or(State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12))
                 {
                     const float fbHeight = draw_data->DisplaySize.y * clip_scale.y;
                     r = { (LONG)clip_min.x, (LONG)(fbHeight - clip_max.y), (LONG)clip_max.x, (LONG)(fbHeight - clip_min.y) };
