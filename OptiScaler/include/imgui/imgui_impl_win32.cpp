@@ -88,6 +88,7 @@
 #include "pch.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_win32.h"
+#include "Config.h"
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif

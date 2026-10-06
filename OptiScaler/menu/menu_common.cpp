@@ -2585,6 +2585,11 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
                 MARK_ALL_BACKENDS_CHANGED();
             }
+
+            ImGui::SameLine(0.0f, 6.0f);
+            if (ImGui::Button(I18n::Tr("Rebuild DLSS input (external NR recovery)")))
+                ReInitUpscaler();
+            ShowTooltip(I18n::Tr("Recovery attempt after alt-tab: rebuilds DLSS and briefly pauses FG. External NR recovery still requires in-game verification."));
         }
 
         if (currentFeature->AccessToReactiveMask())
@@ -2999,10 +3004,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             usesDlssd)
         {
 
-            if (usesDlssd)
-                ImGui::SeparatorText("DLSSD Settings");
-            else
-                ImGui::SeparatorText("DLSS Settings");
+            // DLSS Settings separator removed as requested
 
             auto overridden =
                 usesDlssd ? state.dlssdPresetsOverriddenExternally : state.dlssPresetsOverriddenExternally;
@@ -3020,24 +3022,17 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             if (usesDlssd)
             {
                 if (bool pOverride = config->DLSSDRenderPresetOverride.value_or_default();
-                    ImGui::Checkbox(I18n::Tr("Render Presets Override"), &pOverride))
+                    ImGui::Checkbox(I18n::Tr("超分辨率模型"), &pOverride))
                     config->DLSSDRenderPresetOverride = pOverride;
 
                 ShowHelpMarker(I18n::Tr("Each render preset has it strengths and weaknesses\n""Override to potentially improve image quality\n""Press apply after enable/disable"));
 
-                /*
-                auto currentPresetIndex = GetPresetIndex(currentFeature, true);
+                ImGui::SameLine(0.0f, 6.0f);
 
-                if (currentPresetIndex == 0)
-                    ImGui::Text(I18n::Tr("Current Preset: Default"));
-                else
-                    ImGui::Text(I18n::Tr("Current Preset: %c"), 64 + currentPresetIndex);
-                */
-
-                ImGui::BeginDisabled(!config->DLSSDRenderPresetOverride.value_or_default() /*|| overridden*/);
+                ImGui::BeginDisabled(!config->DLSSDRenderPresetOverride.value_or_default());
                 ImGui::PushItemWidth(135.0f * menuResScale);
 
-                AddDLSSDRenderPreset("Override Preset", &comboPreset);
+                AddDLSSDRenderPreset("##OverridePreset", &comboPreset);
 
                 ImGui::PopItemWidth();
                 ImGui::EndDisabled();
@@ -3045,25 +3040,18 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             else
             {
                 if (bool pOverride = config->RenderPresetOverride.value_or_default();
-                    ImGui::Checkbox(I18n::Tr("Render Presets Override"), &pOverride))
+                    ImGui::Checkbox(I18n::Tr("超分辨率模型"), &pOverride))
                     config->RenderPresetOverride = pOverride;
 
                 ShowHelpMarker(I18n::Tr("Each render preset has it strengths and weaknesses\n""Override to potentially improve image quality\n""Press Apply after enable/disable"));
 
-                /*
-                auto currentPresetIndex = GetPresetIndex(currentFeature, false);
+                ImGui::SameLine(0.0f, 6.0f);
 
-                if (currentPresetIndex == 0)
-                    ImGui::Text(I18n::Tr("Current Preset: Default"));
-                else
-                    ImGui::Text(I18n::Tr("Current Preset: %c"), 64 + currentPresetIndex);
-                */
-
-                ImGui::BeginDisabled(!config->RenderPresetOverride.value_or_default() /*|| overridden*/);
+                ImGui::BeginDisabled(!config->RenderPresetOverride.value_or_default());
 
                 ImGui::PushItemWidth(135.0f * menuResScale);
 
-                AddDLSSRenderPreset("Override Preset", &comboPreset);
+                AddDLSSRenderPreset("##OverridePreset", &comboPreset);
 
                 ImGui::PopItemWidth();
                 ImGui::EndDisabled();
@@ -3084,10 +3072,26 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 else
                 {
                     config->RenderPresetForAll = comboPreset.value_or_default();
-                    state.newBackend = currentBackend;
+                    state.newBackend = Upscaler::DLSS;
                 }
 
                 MARK_ALL_BACKENDS_CHANGED();
+            }
+
+            // 6: 帧生成模型替换改到渲染预设覆盖那边
+            {
+                const char* fgPresetOptions[] = { "Auto (默认)", "Preset A (关闭 UI 重构)", "Preset B (开启 UI 重构)" };
+                std::string currentFGPreset = config->FGDLSSGAmpereMfgPreset.value_or("Auto");
+                int fgPresetIdx = (currentFGPreset == "A" || currentFGPreset == "a") ? 1 :
+                                  (currentFGPreset == "B" || currentFGPreset == "b") ? 2 : 0;
+                ImGui::PushItemWidth(140.0f * menuResScale);
+                if (ImGui::Combo(I18n::Tr("帧生成模型 (DLSS-G)"), &fgPresetIdx, fgPresetOptions, 3))
+                {
+                    const char* storedFGPresetOptions[] = { "Auto", "A", "B" };
+                    config->FGDLSSGAmpereMfgPreset = std::string(storedFGPresetOptions[fgPresetIdx]);
+                }
+                ImGui::PopItemWidth();
+                ShowHelpMarker(I18n::Tr("DLSS-G 3.7+ / 310.9 预设切换：\nAuto: 游戏或驱动默认\nPreset A: 传统光流插帧（关闭 UI 重构）\nPreset B: 激进 HUD 重构（减少插帧重影）"));
             }
 
             ImGui::Spacing();
@@ -3181,20 +3185,7 @@ void MenuCommon::RenderAdaMfgUnlock(RenderMenuContext& ctx)
         if (ImGui::Checkbox(I18n::Tr("Fix interpolation timing (no duplicate frames, restart)"), &adaMidpoint))
             config->FGDLSSGAdaMidpointFix = adaMidpoint;
 
-        // UI Recomposition Preset for DLSS-G / Ada MFG
-        const char* presetOptions[] = { "Auto (Game / Profile default)", "Preset A (Force UI recomposition off)", "Preset B (Force UI recomposition on)" };
-        std::string currentPreset = config->FGDLSSGAmpereMfgPreset.value_or("Auto");
-        int presetIdx = (currentPreset == "A" || currentPreset == "a") ? 1 :
-                        (currentPreset == "B" || currentPreset == "b") ? 2 : 0;
-        if (ImGui::Combo(I18n::Tr("DLSS-G Preset (Recomposition)##ada"), &presetIdx, presetOptions, 3))
-        {
-            const char* storedPresetOptions[] = { "Auto", "A", "B" };
-            config->FGDLSSGAmpereMfgPreset = std::string(storedPresetOptions[presetIdx]);
-        }
-        ShowHelpMarker(I18n::Tr("DLSS-G 3.7+ / 310.9 preset for HUD recomposition:\n"
-                                "Auto: Game or profile default.\n"
-                                "Preset A: Force UI recomposition off (standard optical flow interpolation).\n"
-                                "Preset B: Force UI recomposition on (cleaner HUD, reduces ghosting if game tags UI)."));
+
         ShowHelpMarker(I18n::Tr("Unlocked 3X-6X otherwise blends every generated frame at the temporal midpoint, producing"" duplicate frames.\nRewrites the Ada (sm_89) interpolation PTX to use each frame's real time"" and forces JIT.\nSave Settings and restart after changing."));
 
         const auto status = MfgUnlock::LastStatus();
@@ -3234,22 +3225,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     const bool dynamicMfg = config->FGDLSSGOverrideForceDMFG.value_or_default() || config->FGDLSSGForceDMFG.value_or_default();
     const bool ampereFallbackToFsrFg = AmpereMfgLoader::ShouldFallbackToFsrFg(configuredFrames, onLinux, ampereActive, fallbackSetting, dynamicMfg);
 
-    if (ampereActive)
-    {
-        external = true;
-        ImGui::BeginDisabled();
-        ImGui::Checkbox(I18n::Tr("External frame generation / MFG unlocker"), &external);
-        ImGui::EndDisabled();
-        ShowHelpMarker(I18n::Tr("Automatically locked to enabled because the Ampere (SM86) MFG unlocker is active.\n""To disable External FG, disable Ampere SM86 MFG below first."));
-    }
-    else
-    {
-        if (ImGui::Checkbox(I18n::Tr("External frame generation / MFG unlocker"), &external))
-            config->ExternalFrameGeneration = external;
-        ShowHelpMarker(I18n::Tr("Leaves Streamline, Reflex and FG control to the game/external mod.""\nNR and NGX upscaling remain available. Save Settings and restart.""\nDoes not install an unlocker or enable FG in unsupported games."));
-    }
-    if (external != state.externalFrameGeneration && !ampereFallbackToFsrFg)
-        ImGui::TextWrapped(I18n::Tr("Save Settings and restart to change frame-generation ownership."));
+    // External FG removed as requested
+
 
     auto& menuResScale = ctx.menuResScale;
 
@@ -3516,60 +3493,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     }
 
     // 鈹€鈹€ NVIDIA Smooth Motion (Driver-level Frame Interpolation) 鈹€鈹€鈹€鈹€鈹€
-    ImGui::Separator();
-    bool smoothMotion = config->FGDLSSGSmoothMotion.value_or(false);
-    const bool isAdaOrBlackwell = isNvidia && (primaryGpu.nvidiaArchInfo.architecture_id >= NV_GPU_ARCHITECTURE_AD100);
-    const bool disableSmoothMotion = onLinux || !isAdaOrBlackwell;
-
-    if (disableSmoothMotion)
-    {
-        ImGui::BeginDisabled();
-        ImGui::Checkbox(I18n::Tr("NVIDIA Smooth Motion (Driver-level FG)##driver_sm"), &smoothMotion);
-        ImGui::EndDisabled();
-        if (onLinux)
-        {
-            ShowHelpMarker(I18n::Tr("Disabled because the active OS is not Windows (10/11).\n""NVIDIA Smooth Motion is a Windows-only driver display pipeline feature (requires driver 571.86+ on Windows)."));
-        }
-        else if (!isNvidia)
-        {
-            ShowHelpMarker(I18n::Tr("Disabled because the active GPU is not NVIDIA.\n""NVIDIA Smooth Motion requires an NVIDIA GPU and driver 571.86+ on Windows."));
-        }
-        else
-        {
-            ShowHelpMarker(I18n::Tr("Disabled because the active GPU is not NVIDIA Ada Lovelace (RTX 40) or Blackwell (RTX 50).\n""NVIDIA driver-level Smooth Motion requires an RTX 40 or 50 series GPU (driver 571.86+).\n""On RTX 30 series, an external driver patcher is required."));
-        }
-    }
-    else
-    {
-        if (ImGui::Checkbox(I18n::Tr("NVIDIA Smooth Motion (Driver-level FG)##driver_sm"), &smoothMotion))
-        {
-            config->FGDLSSGSmoothMotion = smoothMotion;
-            NvApiHooks::ApplySmoothMotionDrs(smoothMotion);
-        }
-        ShowHelpMarker(I18n::Tr("NVIDIA Driver-Level Smooth Motion (requires driver 571.86+ on Windows):\n""Enables driver-level optical-flow frame interpolation directly via NVIDIA Driver Settings (DRS).\n""Strictly opt-in: intended for games that lack native DLSS Frame Generation support.\n"
-                       "Supported on GeForce RTX 40 (Ada) and RTX 50 (Blackwell) series GPUs.\n"
-                       "Can be toggled dynamically on the fly."));
-
-        const auto& ampereStatus = AmpereMfgLoader::LastStatus();
-        if (ampereStatus.SmoothMotionActive || smoothMotion)
-        {
-            ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f), "[Smooth Motion Active]");
-        }
-    }
-
-    if (state.externalFrameGeneration || ampereFallbackToFsrFg)
-    {
-        if (state.externalFrameGeneration)
-            ImGui::TextWrapped(I18n::Tr("External FG is active. Set the multiplier in the game or unlocker, not OptiScaler."));
-        else if (ampereFallbackToFsrFg)
-        {
-            const std::string fallbackType = AmpereMfgLoader::ResolveFallbackFgType(config->FGDLSSGAmpereMfgLinuxFallbackType.value_or("fsrfg"));
-            const char* fallbackTypeName = (fallbackType == "xefg") ? "XeFG" : "FSR FG";
-            ImGui::TextWrapped(I18n::Tr("Linux FG Fallback is active (%s). Multiplier is controlled via Max Generated Frames above or in-game settings."), fallbackTypeName);
-        }
-        return;
-    }
+    // Smooth Motion removed as requested
 
     /// FG INPUTS
     static std::vector<MenuOption<FGInput>> inputOptions;
@@ -4739,14 +4663,7 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             }
         }
 
-        bool useGamesMarkers = config->FGDLSSGUseGamesReflexMarkers.value_or_default();
-        ImGui::BeginDisabled(!ReflexHooks::gameIsSendingMarkers());
-        if (ImGui::Checkbox(I18n::Tr("Use Game's Reflex Markers"), &useGamesMarkers))
-        {
-            config->FGDLSSGUseGamesReflexMarkers = useGamesMarkers;
-            LOG_DEBUG("Changed set FGDLSSGUseGamesReflexMarkers: {}", useGamesMarkers);
-        }
-        ImGui::EndDisabled();
+// Use Game's Reflex Markers moved to Advanced OptiFG Settings
     }
 
     // OptiFG
@@ -4826,6 +4743,8 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                 config->FGEnableDepthScale = depthScale;
             ShowHelpMarker(I18n::Tr("Fix for DLSS-D wrong depth inputs"));
 
+            ImGui::SameLine(0.0f, 16.0f);
+
             bool resourceFlip = config->FGResourceFlip.value_or_default();
             if (ImGui::Checkbox(I18n::Tr("Flip (Unity)"), &resourceFlip))
                 config->FGResourceFlip = resourceFlip;
@@ -4843,6 +4762,16 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             if (auto ch = ScopedCollapsingHeader(I18n::Tr("Advanced OptiFG Settings")); ch.IsHeaderOpen())
             {
                 ScopedIndent indent {};
+
+                bool useGamesMarkers = config->FGDLSSGUseGamesReflexMarkers.value_or_default();
+                ImGui::BeginDisabled(!ReflexHooks::gameIsSendingMarkers());
+                if (ImGui::Checkbox(I18n::Tr("Use Game's Reflex Markers"), &useGamesMarkers))
+                {
+                    config->FGDLSSGUseGamesReflexMarkers = useGamesMarkers;
+                    LOG_DEBUG("Changed set FGDLSSGUseGamesReflexMarkers: {}", useGamesMarkers);
+                }
+                ImGui::EndDisabled();
+                ImGui::Spacing();
 
                 if (!Config::Instance()->FGDisableHUDFix.value_or_default() &&
                     state.swapchainInteropApi == SwapchainInteropApi::None)
@@ -7480,10 +7409,6 @@ void MenuCommon::RenderMainMenuTable(RenderMenuContext& ctx)
 {
     if constexpr (FgOnly::Enabled)
     {
-        ImGui::SeparatorText(I18n::Tr("OptiScaler FG-only companion"));
-        if (ImGui::Button(I18n::Tr("Rebuild DLSS input (external NR recovery)")))
-            ReInitUpscaler();
-        ShowTooltip(I18n::Tr("Recovery attempt after alt-tab: rebuilds DLSS and briefly pauses FG. External NR recovery still requires in-game verification."));
         RenderActiveUpscalerSettings(ctx);
         RenderFrameGenerationSelection(ctx);
         RenderAdaMfgUnlock(ctx);
@@ -8209,7 +8134,7 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     // Main menu window
     if (windowTitle.empty())
     {
-        windowTitle = StrFmt("%s - %s %s %s %s", VER_PRODUCT_NAME, state.gameExe.c_str(),
+        windowTitle = StrFmt("AdaMfg 仅帧生成 OptiScaler v0.2.0 by 喵小夕 - %s %s %s %s",
                              state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }

@@ -1288,10 +1288,6 @@ void FeedImGui(bool menuVisible)
 
     float mousePosX = static_cast<float>(_state.MouseClientPos.x);
     float mousePosY = static_cast<float>(_state.MouseClientPos.y);
-    if (Config::Instance()->MenuFlipY.value_or_default() && io.DisplaySize.y > 0.0f)
-    {
-        mousePosY = io.DisplaySize.y - mousePosY;
-    }
     io.AddMousePosEvent(mousePosX, mousePosY);
 
     if (_state.MouseWheel != 0.0f)
