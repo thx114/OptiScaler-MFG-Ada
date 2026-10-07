@@ -7700,7 +7700,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
             ImGui::SetTooltip(I18n::Tr("Menu display language. Auto follows the system language.\nTakes effect immediately; the font refreshes on the next frame."));
         ImGui::SameLine(0.0f, 15.0f);
 
-        bool flipY = config->MenuFlipY.value_or(state.swapchainInteropApi == SwapchainInteropApi::Dx11wDx12);
+        bool flipY = config->MenuFlipY.value_or(false);
         if (ImGui::Checkbox(I18n::Tr("Flip Menu Y##flip_y"), &flipY))
             config->MenuFlipY = flipY;
         if (ImGui::IsItemHovered())
@@ -8199,7 +8199,7 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     // Main menu window
     if (windowTitle.empty())
     {
-        windowTitle = StrFmt("AdaMfg 仅帧生成 OptiScaler v0.2.0 by 喵小夕 - %s %s %s",
+        windowTitle = StrFmt("AdaMfg 仅帧生成 OptiScaler v0.2.1 by 喵小夕 - %s %s %s",
                              state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }

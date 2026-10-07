@@ -395,6 +395,10 @@ void IdentifyGpu::updateD3d12Capabilities(D3d12Proxy::PFN_D3D12CreateDevice o_D3
 
     for (auto& gpuInfo : cache)
     {
+        if (gpuInfo.vendorId == VendorId::Nvidia)
+        {
+            continue;
+        }
         if (gpuInfo.vendorId != VendorId::AMD && !gpuInfo.usesDxvk &&
             Config::Instance()->Fsr4ForceModel.value_or_default() == FSR4Support::None)
         {

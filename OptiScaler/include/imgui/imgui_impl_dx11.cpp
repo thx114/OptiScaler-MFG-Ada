@@ -125,7 +125,7 @@ static void ImGui_ImplDX11_SetupRenderState(ImDrawData* draw_data, ID3D11DeviceC
         float R = draw_data->DisplayPos.x + draw_data->DisplaySize.x;
         float T = draw_data->DisplayPos.y;
         float B = draw_data->DisplayPos.y + draw_data->DisplaySize.y;
-        if (Config::Instance()->MenuFlipY.value_or(State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12))
+        if (Config::Instance()->MenuFlipY.value_or(false))
             std::swap(T, B);
         float mvp[4][4] =
         {
@@ -312,7 +312,7 @@ void ImGui_ImplDX11_RenderDrawData(ImDrawData* draw_data)
 
                 // Apply scissor/clipping rectangle
                 D3D11_RECT r;
-                if (Config::Instance()->MenuFlipY.value_or(State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12))
+                if (Config::Instance()->MenuFlipY.value_or(false))
                 {
                     const float fbHeight = draw_data->DisplaySize.y * clip_scale.y;
                     r = { (LONG)clip_min.x, (LONG)(fbHeight - clip_max.y), (LONG)clip_max.x, (LONG)(fbHeight - clip_min.y) };
