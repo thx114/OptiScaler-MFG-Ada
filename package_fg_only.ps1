@@ -1,4 +1,4 @@
-﻿param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.0')
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.1')
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $dll = Join-Path $root 'x64/Release/a/OptiScaler.dll'
