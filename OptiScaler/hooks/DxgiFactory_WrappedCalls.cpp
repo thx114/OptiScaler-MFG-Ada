@@ -3,6 +3,7 @@
 
 #include "FG_Hooks.h"
 #include "D3D11_Hooks.h"
+#include "GimiDx12OutputScope.h"
 #include "D3D12_Hooks.h"
 
 #include <Config.h>
@@ -662,10 +663,14 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForHwnd(IDXGIFactory2* realFacto
                     HRESULT fgScResult = E_FAIL;
                     IDXGISwapChain1* fgSwapChain1 = nullptr;
                     IDXGISwapChain4* fgSwapChain4 = nullptr;
+                    // 研究诊断：创建 HRESULT=0 是成功，不能当作空交换链。
+                    HRESULT fgInterfaceResult = E_NOINTERFACE;
                     bool fgSwapChainIsRealFG = false;
 
                     if (SUCCEEDED(realScResult) && PrepareDx12InteropDesc1(fgDesc))
                     {
+                        // 仅 FG 创建及其原生 DX12 回退，不包含隐藏 DX11 交换链。
+                        gimi_interop::ScopedPrivateDx12Output gimiOutputScope;
                         {
                             ScopedSkipFGSCCreation skipFGSCCreation {};
                             fgScResult = FGHooks::CreateSwapChainForHwnd(
@@ -689,7 +694,19 @@ HRESULT DxgiFactoryWrappedCalls::CreateSwapChainForHwnd(IDXGIFactory2* realFacto
                         }
 
                         if (SUCCEEDED(fgScResult) && fgSwapChain1 != nullptr)
-                            fgSwapChain1->QueryInterface(IID_PPV_ARGS(&fgSwapChain4));
+                            fgInterfaceResult = fgSwapChain1->QueryInterface(IID_PPV_ARGS(&fgSwapChain4));
+                    }
+
+                    // 只记录已经发生的调用结果，不解包、不改写 GIMI 或 ReShade 钩子。
+                    LOG_INFO("GIMI interop probe: real_hr {:X}, real11 {:X}, fg_hr {:X}, fg1 {:X}, qi4_hr {:X}, fg4 {:X}, factory {:X}, hwnd {:X}",
+                             (UINT) realScResult, (size_t) realDx11SwapChain1, (UINT) fgScResult,
+                             (size_t) fgSwapChain1, (UINT) fgInterfaceResult, (size_t) fgSwapChain4,
+                             (size_t) realFactory, (size_t) hWnd);
+                    if (fgSwapChain1 != nullptr)
+                    {
+                        void** probeVtable = *reinterpret_cast<void***>(fgSwapChain1);
+                        LOG_INFO("GIMI interop probe: fg1 QI owner {}, Present owner {}",
+                                 Util::WhoIsTheCaller(probeVtable[0]), Util::WhoIsTheCaller(probeVtable[8]));
                     }
 
                     if (SUCCEEDED(realScResult) && realDx11SwapChain1 != nullptr && fgSwapChain4 != nullptr)

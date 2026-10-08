@@ -1,4 +1,4 @@
-﻿//{{NO_DEPENDENCIES}}
+//{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
 // Used by OptiScaler.rc
 //
@@ -28,7 +28,7 @@
 
 #define VER_MAJOR_VERSION 0
 #define VER_MINOR_VERSION 2
-#define VER_HOTFIX_VERSION 1
+#define VER_HOTFIX_VERSION 2
 #define VER_BUILD_NUMBER 0
 
 // #define VER_DEV_RELEASE

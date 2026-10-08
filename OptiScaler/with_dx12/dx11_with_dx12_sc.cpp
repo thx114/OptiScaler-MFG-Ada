@@ -1,6 +1,10 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "dx11_with_dx12_sc.h"
+#include "NativeDx12Compat.h"
 #include "ReShadePresentCapture.h"
+#include "ReShadeInputWindow.h"
+#include "FinalReShadeStage.h"
+#include "NativeFinalOutput.h"
 #include "Dx11FgResize.h"
 
 #include <with_dx12/with_dx12.h>
@@ -134,6 +138,25 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
 
     State::Instance().swapchainInteropApi = SwapchainInteropApi::Dx11wDx12;
 
+    // Own a verified output contract even when an interposer bypassed our
+    // generic output wrapper. This is not a fake GIMI version export.
+    if (_fgSwapChain && _dx12Device && _dx12CommandQueue && _handle)
+    {
+        ID3D12Device* actualDevice=nullptr;HWND actualWindow=nullptr;
+        const HRESULT deviceResult=_fgSwapChain->GetDevice(IID_PPV_ARGS(&actualDevice));
+        const HRESULT windowResult=_fgSwapChain->GetHwnd(&actualWindow);
+        const bool matches=SUCCEEDED(deviceResult) && actualDevice &&
+            NativeDx12Compat::SameObject(actualDevice,_dx12Device) &&
+            SUCCEEDED(windowResult) && actualWindow==_handle;
+        if(actualDevice) actualDevice->Release();
+        if(matches) {
+            HMODULE inputOwner=_real ? Util::GetCallerModule((*reinterpret_cast<void***>(_real))[8]) : nullptr;
+            _registeredLegacyFinalOutput=inputOwner && GetProcAddress(inputOwner,"CBTProc") &&
+                !GetProcAddress(inputOwner,"XXMIPrivateDx12PassthroughVersion");
+            NativeFinalOutput::Register(_handle,_registeredLegacyFinalOutput);_registeredNativeFinalOutput=true;
+            LOG_INFO("Rocket/legacy GIMI compatibility: DX11 companion verified native DX12 output device/window; final Home does not require GIMI marker exports");
+        }
+    }
     _RefreshCachedSwapchainDesc();
 
     if constexpr (FgOnly::Enabled)
@@ -143,12 +166,24 @@ Dx11wDx12SC::Dx11wDx12SC(IDXGISwapChain* real, IDXGISwapChain4* fgSC, ID3D11Devi
             LOG_WARN("FG companion capture: ReShade native boundary unavailable; legacy pre-addon copy remains");
     }
 
+    if (_real != nullptr)
+    {
+        const auto presentAddress=(*reinterpret_cast<void***>(_real))[8];
+        HMODULE owner=Util::GetCallerModule(presentAddress);
+        _gimiCaptureBoundary=owner && GetProcAddress(owner,"XXMIPreFlipCaptureVersion");
+        if (_gimiCaptureBoundary)
+            LOG_INFO("XXMI coexist: GIMI post-frame-actions / pre-flip capture boundary enabled");
+    }
+
     LOG_INFO("Dx11wDx12SC {} created, real: {:X}, fg: {:X}, dx11: {:X}, dx12: {:X}, queue: {:X}", _id, (UINT64) _real,
              (UINT64) _fgSwapChain, (UINT64) _dx11Device, (UINT64) _dx12Device, (UINT64) _dx12CommandQueue);
 }
 
 Dx11wDx12SC::~Dx11wDx12SC()
 {
+    if (State::Instance().isShuttingDown) _finalReShade.ForgetDuringShutdown();
+    else _finalReShade.Reset();
+    if(_registeredNativeFinalOutput) NativeFinalOutput::Unregister(_handle,_registeredLegacyFinalOutput);
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropObjects();
 
@@ -335,13 +370,14 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     if (!_CopyDx11BackBufferToShared(dx11Index))
         return DXGI_ERROR_DEVICE_REMOVED;
     bool hiddenPresented = false;
-    if (_captureNative != nullptr)
+    if (_captureNative != nullptr || _gimiCaptureBoundary)
     {
         // Keep the baseline copy above as a safe fallback if another hook skips native Present.
         // The second copy runs AFTER ReShade/addon writes but BEFORE the native flip/discard.
         // Never acquire/copy a rotated backbuffer after Present returns.
         struct CopyContext { Dx11wDx12SC* owner; UINT index; } copyContext {this, dx11Index};
-        PresentCapture::Request request {_captureNative, &copyContext, [](void* data) {
+        const void* captureTarget=_gimiCaptureBoundary ? static_cast<const void*>(_real) : static_cast<const void*>(_captureNative);
+        PresentCapture::Request request {captureTarget, &copyContext, [](void* data) {
             auto* context = static_cast<CopyContext*>(data);
             return context->owner->_CopyDx11BackBufferToShared(context->index);
         }};
@@ -357,8 +393,9 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             return hiddenResult;
         }
         if (doTiming)
-            LOG_INFO("FG companion capture: attempted={} copied={} hiddenResult={:X} dx11Index={}",
-                     request.attempted, request.succeeded, (UINT)hiddenResult, dx11Index);
+            LOG_INFO("FG companion capture: attempted={} copied={} hiddenResult={:X} dx11Index={} boundary={}",
+                     request.attempted, request.succeeded, (UINT)hiddenResult, dx11Index,
+                     _gimiCaptureBoundary ? "GIMI after overlay" : "ReShade native");
     }
     tWaitDx11 = tNow();
     if (!_WaitDx11ThenDx12())
@@ -412,8 +449,35 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             LOG_WARN("hidden real DX11 Present failed: {:X}", (UINT) realPresentResult);
     }
 
+    // 真实 FG Present 钩子仍会执行 NR 和 UI 写入，所以最终效果/菜单
+    // 必须延后到这些写入之后，而不是刚复制 DX11 输出时就绘制。
+    const bool nativeFinal=NativeFinalOutput::Contains(_handle);
+    if(nativeFinal)
+    {
+        if(_finalReShade.HasRuntime()) _finalReShade.Reset();
+    }
+    else if (fgHookedPresenter)
+        _finalReShade.Prepare(_fgSwapChain,_dx12CommandQueue,_handle);
+    else _finalReShade.Present(_fgSwapChain,_dx12CommandQueue,_handle);
     tPrePresent = tNow();
-    auto result = _fgSwapChain->Present(SyncInterval, Flags);
+    HRESULT result;
+    if (fgHookedPresenter && !nativeFinal)
+    {
+        FinalReShadeStage::Request request {_fgSwapChain,this,[](void* context) {
+            auto* owner=static_cast<Dx11wDx12SC*>(context);
+            owner->_finalReShade.Present(owner->_fgSwapChain,owner->_dx12CommandQueue,owner->_handle);
+        }};
+        {
+            FinalReShadeStage::Scope finalScope(request);
+            result=_fgSwapChain->Present(SyncInterval,Flags);
+        }
+        if (doTiming)
+            LOG_INFO("NR overlay order: final ReShade after FG/NR/UI writes, invoked {}, final runtime {}",request.attempted,_finalReShade.HasRuntime());
+    }
+    else {
+        result=_fgSwapChain->Present(SyncInterval,Flags);
+        if(doTiming && nativeFinal) LOG_INFO("NR native overlay: outer proxy effects skipped; native output owns final ReShade");
+    }
     const auto tEnd = tNow();
     if (doTiming || std::chrono::duration<double, std::milli>(tEnd - tStart).count() >= 100.0)
     {
@@ -473,7 +537,16 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetDesc(DXGI_SWAP_CHAIN_DESC* pDesc)
 
     auto result = _real->GetDesc(pDesc);
     if (SUCCEEDED(result) && pDesc != nullptr)
-        pDesc->OutputWindow = _handle;
+    {
+        // ReShade DX11 通过 GetDesc 而不是 GetHwnd 注册输入窗口。
+        // 对它保留底层隐藏 HWND；游戏和其他调用方继续看到可见 HWND。
+        if (ReShadeInputWindow::UseHiddenSourceWindow(_ReturnAddress(), NativeFinalOutput::ContainsLegacy(_handle)) && pDesc->OutputWindow && pDesc->OutputWindow!=_handle)
+        {
+            static bool logged=false;
+            if(!logged) {LOG_INFO("XXMI coexist: DX11 ReShade GetDesc keeps hidden input HWND {:X}, final DX12 visible HWND {:X}",(size_t)pDesc->OutputWindow,(size_t)_handle);logged=true;}
+        }
+        else pDesc->OutputWindow = _handle;
+    }
 
     return result;
 }
@@ -493,6 +566,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
         return DXGI_ERROR_DEVICE_REMOVED;
     }
 
+    _finalReShade.Reset();
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropBackBuffers();
 
@@ -596,6 +670,20 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::GetHwnd(HWND* pHwnd)
     if (pHwnd == nullptr)
         return DXGI_ERROR_INVALID_CALL;
 
+    // 仅给 ReShade 的 DX11 source runtime 返回实际隐藏 HWND。
+    // 游戏自身 GetHwnd 仍返回可见窗口；最终 DX12 runtime 由 FG 交换链
+    // 提供可见 HWND，不再共享先被 DX11 清空的输入对象。
+    if (_real1 && ReShadeInputWindow::UseHiddenSourceWindow(_ReturnAddress(), NativeFinalOutput::ContainsLegacy(_handle)))
+    {
+        HWND hidden=nullptr;
+        if (SUCCEEDED(_real1->GetHwnd(&hidden)) && hidden && hidden!=_handle)
+        {
+            *pHwnd=hidden;
+            static bool logged=false;
+            if(!logged) {LOG_INFO("XXMI coexist: DX11 ReShade input uses hidden HWND {:X}; final DX12 keeps visible HWND {:X}",(size_t)hidden,(size_t)_handle);logged=true;}
+            return S_OK;
+        }
+    }
     *pHwnd = _handle;
     return S_OK;
 }
@@ -737,6 +825,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
         return DXGI_ERROR_DEVICE_REMOVED;
     }
 
+    _finalReShade.Reset();
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
     _ReleaseInteropBackBuffers();
 
@@ -1376,4 +1465,15 @@ void Dx11wDx12SC::_AdvanceFakeBackBufferIndex()
 {
     const UINT ringCount = _sharedDx11BackBufferCopies.size() != 0 ? static_cast<UINT>(_sharedDx11BackBufferCopies.size()) : 4;
     _currentFakeIndex = (_currentFakeIndex + 1) % ringCount;
+}
+
+// 配套 GIMI 在完成帧动作和提示绘制后调用，只复制当前请求的目标。
+extern "C" __declspec(dllexport) void WINAPI OptiScalerCaptureAfterGimiOverlay(const void* swapchain,UINT flags,BOOL initialized,UINT64 frame,UINT overrides)
+{
+    auto* request=PresentCapture::current;
+    if (!request) return;
+    request->TryCopy(swapchain,(flags & DXGI_PRESENT_TEST)!=0);
+    static std::atomic<uint64_t> samples{0};
+    if(request->attempted && samples.fetch_add(1)%300==0)
+        LOG_INFO("XXMI coexist: GIMI frame actions captured after overlay, config_ready {}, frame {}, texture_override_groups {}, copied {}",initialized!=FALSE,frame,overrides,request->succeeded);
 }

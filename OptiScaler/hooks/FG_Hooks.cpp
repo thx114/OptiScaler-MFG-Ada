@@ -1,4 +1,5 @@
 ﻿#include "pch.h"
+#include <with_dx12/FinalReShadeStage.h>
 #include <dlssnr/DlssNr.h>
 #include "FG_Hooks.h"
 #include <Config.h>
@@ -1273,6 +1274,11 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         LOG_DEBUG("Final SyncInterval: {}", SyncInterval);
     }
 
+    // NR 和 FG 的 UI command list 已提交。最终 ReShade 必须最后绘制，
+    // 同一真实帧仅执行一次，测试/其他交换链/嵌套重复 Present 不执行。
+    FinalReShadeStage::RenderAfterWrites(This,!willPresent);
+
+    // 保持最终 runtime 原有的真实帧语义，再设置 native Present 的标志。
     // Used at wrapped_swapchain LocalPresent to determine is frame is interpolated or not
     if (willPresent)
         state.fgPresentIsCalled = true;

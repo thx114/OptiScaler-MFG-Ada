@@ -104,6 +104,8 @@ bool DLSSFeatureDx11::EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NVS
                     nativeScreenSpaceGuides->Converted(NativeScreenSpaceGuides_Dx11::Depth)->GetDesc(&depth);
                     nativeScreenSpaceGuides->Converted(NativeScreenSpaceGuides_Dx11::Motion)->GetDesc(&motion);
                     nativeScreenSpaceGuides->Converted(NativeScreenSpaceGuides_Dx11::Output)->GetDesc(&output);
+                    LOG_INFO("NR guide image orientation: row flip active (y -> height-1-y), motion source fmt {}, color row-copy {}; vector scale adjustment is separate",
+                        static_cast<unsigned>(motion.Format),nativeScreenSpaceGuides->UsesRowCopyColor());
                     LOG_INFO("NR NativeScreenSpaceGuides active: native DX11 NGX; depth {} -> {} {}x{} fmt {}, motion {} -> {} {}x{} fmt {}, output {}x{}, MV.Scale.Y {} -> {}, jitterY {} -> {}",
                         static_cast<void*>(nativeScreenSpaceGuides->Original(NativeScreenSpaceGuides_Dx11::Depth)),
                         static_cast<void*>(nativeScreenSpaceGuides->Converted(NativeScreenSpaceGuides_Dx11::Depth)),
@@ -115,8 +117,9 @@ bool DLSSFeatureDx11::EvaluateInternal(ID3D11DeviceContext* InDeviceContext, NVS
                         nativeScreenSpaceGuides->OriginalJitterY(), -nativeScreenSpaceGuides->OriginalJitterY());
                 }
                 else
-                    LOG_WARN("NR NativeScreenSpaceGuides bypassed: {} HRESULT {:X}; native inputs retained",
-                        nativeScreenSpaceGuides->Reason(), static_cast<unsigned>(prepareResult));
+                    LOG_WARN("NR NativeScreenSpaceGuides bypassed: {} role {} source fmt {} HRESULT {:X}; native inputs retained",
+                        nativeScreenSpaceGuides->Reason(),nativeScreenSpaceGuides->DiagnosticRole(),
+                        static_cast<unsigned>(nativeScreenSpaceGuides->DiagnosticFormat()),static_cast<unsigned>(prepareResult));
             }
         }
         if (converted)

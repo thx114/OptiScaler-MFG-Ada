@@ -1,4 +1,5 @@
-﻿#pragma once
+#pragma once
+#include "ReShadeFinalRuntime.h"
 
 #include "SysUtils.h"
 #include <Config.h>
@@ -89,12 +90,16 @@ class DECLSPEC_UUID("23b064bb-482d-416c-93b1-829acedfb3d0") Dx11wDx12SC final : 
     IDXGISwapChain* _real = nullptr;
     // ReShade's native object; used only for an armed pre-flip capture, never to bypass ReShade.
     IDXGISwapChain* _captureNative = nullptr;
+    bool _gimiCaptureBoundary = false;
+    bool _registeredNativeFinalOutput = false;
+    bool _registeredLegacyFinalOutput = false;
     IDXGISwapChain1* _real1 = nullptr;
     IDXGISwapChain2* _real2 = nullptr;
     IDXGISwapChain3* _real3 = nullptr;
     IDXGISwapChain4* _real4 = nullptr;
 
     IDXGISwapChain4* _fgSwapChain = nullptr;
+    ReShadeFinalOutput::Runtime _finalReShade;
 
     int _id = 0;
     LONG _refcount = 1;

@@ -1,5 +1,8 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "wrapped_swapchain.h"
+#include <hooks/GimiDx12OutputScope.h>
+#include <with_dx12/NativeFinalOutput.h>
+#include <with_dx12/NativeDx12Compat.h>
 #include <dlssnr/DlssNr.h>
 #include <exports/OptiDepthProvider.h>
 #include <hooks/DxgiSwapchainSizing.h>
@@ -273,7 +276,8 @@ void ReportD3D12LiveObjects(ID3D12Device* device)
 #endif
 
 static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                            const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP)
+                            const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP,
+                            ReShadeFinalOutput::Runtime* finalRuntime=nullptr, ID3D12CommandQueue* finalQueue=nullptr)
 {
     // An external FG producer may need one intermediate Present for pacing.
     // Do not run RenoDX/OptiScaler finished-picture NR, overlay, frame pacing,
@@ -560,6 +564,21 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             State::Instance().scChanged = false;
     }
 
+    // Streamline/NR 的最终图像此时已经进入原生输出缓冲区。
+    // 在此原生 Present 边界绘制，而不是修改外层代理的输入缓冲区。
+    if(willPresent && finalRuntime && finalQueue)
+    {
+        IDXGISwapChain4* native=nullptr;
+        if(SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&native))) && native)
+        {
+            finalRuntime->Present(native,finalQueue,hWnd);
+            static std::atomic<uint64_t> nativeOverlayFrames{0};
+            if(nativeOverlayFrames.fetch_add(1)%300==0)
+                LOG_INFO("NR native overlay: rendered on raw output {:X}, queue {:X}, index {}, runtime ready {}",(size_t)native,(size_t)finalQueue,native->GetCurrentBackBufferIndex(),finalRuntime->HasRuntime());
+            native->Release();
+        }
+    }
+
     const auto pacingOverlay = std::chrono::steady_clock::now();
     LOG_DEBUG("Calling original present");
 
@@ -601,6 +620,34 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
     _id = ++scCount;
     _lastFlags = flags;
 
+    // Recover only our private D3D12 output. Preserve the original shell's owned
+    // reference until teardown; it can still be referenced by other interposers.
+    if (gimi_interop::private_dx12_output_depth != 0 && _real && pDevice && hWnd)
+    {
+        ComPtr<ID3D12CommandQueue> queue;
+        ComPtr<ID3D12Device> expectedDevice;
+        if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue))) && queue &&
+            SUCCEEDED(queue->GetDevice(IID_PPV_ARGS(&expectedDevice))) && expectedDevice)
+        {
+            void** methods = *reinterpret_cast<void***>(_real);
+            HMODULE owner = Util::GetCallerModule(methods[0]);
+            const bool legacyShell = owner && GetProcAddress(owner,"CBTProc") &&
+                !GetProcAddress(owner,"XXMIPrivateDx12PassthroughVersion");
+            auto recovered = NativeDx12Compat::RecoverOutput(_real, expectedDevice.Get(), hWnd, legacyShell);
+            if (recovered.output)
+            {
+                _legacyNativeOutputRegistered=legacyShell;
+                _legacyPrivateWrapper.Attach(_real);
+                _real = recovered.output.Detach();
+                LOG_INFO("Rocket/legacy GIMI compatibility: private DX12 output recovered via public SwapChain{}, direct probe {}, HRESULT {:X}; original GIMI DLL unchanged",
+                         recovered.throughInterface, recovered.directProbePerformed, (UINT)recovered.directResult);
+            }
+            else if (FAILED(recovered.directResult))
+                LOG_WARN("Rocket/legacy GIMI compatibility: private DX12 public recovery unavailable, direct {:X}, probe {:X}; retaining original route",
+                         (UINT)recovered.directResult, (UINT)recovered.probeResult);
+        }
+    }
+
     _real->QueryInterface(IID_PPV_ARGS(&_real1));
     if (_real1 != nullptr)
         _real1->Release();
@@ -622,10 +669,21 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
 
     CheckForHdrOutput();
 
+    if(gimi_interop::private_dx12_output_depth!=0 && _real4 && pDevice &&
+       SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&_nativeFinalQueue))))
+    {
+        _nativeFinalOutput=true;
+        NativeFinalOutput::Register(_handle,_legacyNativeOutputRegistered);
+        LOG_INFO("NR native overlay: real output wrapper registered, raw {:X}, queue {:X}, hwnd {:X}",(size_t)_real4,(size_t)_nativeFinalQueue.Get(),(size_t)_handle);
+    }
+
     LOG_INFO("{} created, real: {:X}, refCount: {}", _id, (UINT64) real, refCount);
 }
 
-WrappedIDXGISwapChain4::~WrappedIDXGISwapChain4() {}
+WrappedIDXGISwapChain4::~WrappedIDXGISwapChain4()
+{
+    if(_nativeFinalOutput) NativeFinalOutput::Unregister(_handle,_legacyNativeOutputRegistered);
+}
 
 //
 HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::QueryInterface(REFIID riid, void** ppvObject)
@@ -756,6 +814,11 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
                 State::Instance().currentFGSwapchain = nullptr;
         }
 
+        if(_nativeFinalOutput)
+        {
+            if(State::Instance().isShuttingDown) _nativeFinalReShade.ForgetDuringShutdown();
+            else _nativeFinalReShade.Reset();
+        }
         auto refCount = _real->Release();
 
         // Disabled for now, cause issues with some games
@@ -832,7 +895,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
-        result = LocalPresent(_real, SyncInterval, Flags, nullptr, _device, _handle, _uwp);
+        result = LocalPresent(_real, SyncInterval, Flags, nullptr, _device, _handle, _uwp,
+                              _nativeFinalOutput ? &_nativeFinalReShade : nullptr,_nativeFinalQueue.Get());
 
         // When Reflex can't be used to limit, sleep in present
         if (!State::Instance().reflexLimitsFps && State::Instance().activeFgOutput == FGOutput::NoFG &&
@@ -952,6 +1016,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
         State::Instance().fgChanged = true;
     }
 
+    if(_nativeFinalOutput) _nativeFinalReShade.Reset();
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
 
     State::Instance().scChanged = true;
@@ -1202,7 +1267,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 
     if ((Flags & DXGI_PRESENT_TEST) == 0)
     {
-        result = LocalPresent(_real1, SyncInterval, Flags, pPresentParameters, _device, _handle, _uwp);
+        result = LocalPresent(_real1, SyncInterval, Flags, pPresentParameters, _device, _handle, _uwp,
+                              _nativeFinalOutput ? &_nativeFinalReShade : nullptr,_nativeFinalQueue.Get());
 
         // When Reflex can't be used to limit, sleep in present
         if (!State::Instance().reflexLimitsFps && State::Instance().activeFgOutput == FGOutput::NoFG &&
@@ -1399,6 +1465,7 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
         State::Instance().fgChanged = true;
     }
 
+    if(_nativeFinalOutput) _nativeFinalReShade.Reset();
     MenuOverlayDx::CleanupRenderTarget(true, _handle);
 
     State::Instance().scChanged = true;

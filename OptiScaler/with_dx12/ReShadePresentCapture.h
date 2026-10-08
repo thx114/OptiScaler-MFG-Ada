@@ -1,6 +1,9 @@
 #pragma once
 
 #include "PresentCapture.h"
+#include "NativeDx12Compat.h"
+#include <cwchar>
+#include <string>
 #include <dxgi.h>
 #include <detours/detours.h>
 #include <mutex>
@@ -22,18 +25,20 @@ inline HRESULT STDMETHODCALLTYPE CaptureNativePresent(IDXGISwapChain* swapchain,
 
 inline IDXGISwapChain* Install(IDXGISwapChain* proxy)
 {
-    // ReShade 6.8.0 source/com_utils.hpp and dxgi/dxgi_swapchain.cpp:
-    // on_present (including addon processing) precedes _orig->Present.
-    constexpr GUID unwrappedObject = {
-        0x7f2c9a11, 0x3b4e, 0x4d6a, {0x81, 0x2f, 0x5e, 0x9c, 0xd3, 0x7a, 0x1b, 0x42}};
-    IDXGISwapChain* native = nullptr;
-    if (proxy == nullptr || FAILED(proxy->QueryInterface(unwrappedObject, (void**)&native)) || native == nullptr)
-        return nullptr;
-    if (native == proxy)
-    {
-        native->Release();
-        return nullptr;
-    }
+    // A legacy GIMI shell can return itself for the native IID. Reach the
+    // public 3/2 interface first and validate the actual system DXGI Present.
+    auto selected = NativeDx12Compat::ResolvePresentTarget(proxy, [](IDXGISwapChain* candidate) {
+        const auto entry = (*reinterpret_cast<void***>(candidate))[8];
+        HMODULE owner = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(entry), &owner)) return false;
+        wchar_t actual[MAX_PATH] = {}, system[MAX_PATH] = {};
+        if (!GetModuleFileNameW(owner, actual, MAX_PATH) || !GetSystemDirectoryW(system, MAX_PATH)) return false;
+        std::wstring expected(system); expected += L"\\dxgi.dll";
+        return _wcsicmp(actual, expected.c_str()) == 0;
+    });
+    if (!selected) return nullptr;
+    IDXGISwapChain* native = selected.Detach();
 
     const auto address = (*reinterpret_cast<void***>(native))[8];
     std::lock_guard lock(captureInstallMutex);
@@ -66,7 +71,7 @@ inline IDXGISwapChain* Install(IDXGISwapChain* proxy)
         return nullptr;
     }
     capturePresentAddress = address;
-    LOG_INFO("FG companion capture: ReShade post-addon / pre-flip DX11 capture installed");
+    LOG_INFO("FG companion capture: system DXGI post-wrapper / pre-flip DX11 capture installed (public interface discovery)");
     return native;
 }
 

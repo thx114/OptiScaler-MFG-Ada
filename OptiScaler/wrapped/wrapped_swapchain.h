@@ -1,8 +1,9 @@
-﻿#pragma once
+#pragma once
 
 #include "SysUtils.h"
 #include <OwnedMutex.h>
 #include <Config.h>
+#include <with_dx12/ReShadeFinalRuntime.h>
 
 #include "dxgi1_6.h"
 #include "d3d12.h"
@@ -94,6 +95,11 @@ class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChai
     UINT _lastFlags = 0;
 
     IUnknown* _device = nullptr;
+    bool _nativeFinalOutput = false;
+    bool _legacyNativeOutputRegistered = false;
+    ComPtr<ID3D12CommandQueue> _nativeFinalQueue;
+    ComPtr<IDXGISwapChain> _legacyPrivateWrapper;
+    ReShadeFinalOutput::Runtime _nativeFinalReShade;
 
     HWND _handle = nullptr;
 

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <utility>
+#include "VerticalImageRows.h"
 
 // Native DX11 NGX capture and Present use different row coordinates in Genshin.
 // Keep SR's complete contract consistent while exposing screen-space guides to NR.
@@ -40,6 +41,9 @@ void CSMain(uint3 p : SV_DispatchThreadID) {
     Ptr<ID3D11ShaderResourceView> inputs[RoleCount];
     std::array<Ptr<ID3D11Resource>, RoleCount> originals;
     float mvY = 1, jitterY = 0;
+    std::array<bool, RoleCount> rowCopy {};
+    unsigned diagnosticRole = RoleCount;
+    DXGI_FORMAT diagnosticFormat = DXGI_FORMAT_UNKNOWN;
     const char* reason = "not prepared";
 
     // Never keep the game's resources or their SRVs between evaluate calls:
@@ -72,9 +76,35 @@ void CSMain(uint3 p : SV_DispatchThreadID) {
         case DXGI_FORMAT_R16_UNORM: case DXGI_FORMAT_R16G16_UNORM: case DXGI_FORMAT_R16G16B16A16_UNORM:
         case DXGI_FORMAT_R8_SNORM: case DXGI_FORMAT_R8G8_SNORM: case DXGI_FORMAT_R8G8B8A8_SNORM:
         case DXGI_FORMAT_R16_SNORM: case DXGI_FORMAT_R16G16_SNORM: case DXGI_FORMAT_R16G16B16A16_SNORM:
-        case DXGI_FORMAT_R10G10B10A2_UNORM: return true;
+        case DXGI_FORMAT_R10G10B10A2_UNORM: case DXGI_FORMAT_R11G11B10_FLOAT: return true;
         default: return false;
         }
+    }
+    // SRGB/BGRA 没有可用的同格式 typed UAV。按行 GPU 复制保留原字节，
+    // 避免为翻转颜色做隐式 gamma 解码/编码；运动图仍走现有 CS 图像纵翻。
+    static bool RowCopyColor(DXGI_FORMAT format) {
+        return format==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+            format==DXGI_FORMAT_B8G8R8A8_UNORM || format==DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ||
+            format==DXGI_FORMAT_B8G8R8X8_UNORM || format==DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
+    }
+    HRESULT EnsureRowCopy(Surface& surface, D3D11_TEXTURE2D_DESC desc) {
+        if(surface.texture) {
+            D3D11_TEXTURE2D_DESC old {}; surface.texture->GetDesc(&old);
+            if(old.Width==desc.Width && old.Height==desc.Height && old.Format==desc.Format) return S_OK;
+        }
+        desc.Usage=D3D11_USAGE_DEFAULT; desc.CPUAccessFlags=desc.MiscFlags=0;
+        desc.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        Surface replacement;
+        const auto hr=device->CreateTexture2D(&desc,nullptr,&replacement.texture);
+        if(SUCCEEDED(hr)) surface=std::move(replacement);
+        return hr;
+    }
+    static void FlipRows(ID3D11DeviceContext* context, ID3D11Resource* source,
+                         ID3D11Texture2D* destination, const D3D11_TEXTURE2D_DESC& desc) {
+        NativeGuideRows::Flip(desc.Height,[&](unsigned y,unsigned flipped) {
+            const D3D11_BOX row {0,y,0,desc.Width,y+1,1};
+            context->CopySubresourceRegion(destination,0,0,flipped,0,source,0,&row);
+        });
     }
     HRESULT Init(ID3D11Device* dev) {
         if(shader && device.Get()==dev) return S_OK;
@@ -139,6 +169,9 @@ void CSMain(uint3 p : SV_DispatchThreadID) {
     }
   public:
     const char* Reason() const { return reason; }
+    unsigned DiagnosticRole() const { return diagnosticRole; }
+    DXGI_FORMAT DiagnosticFormat() const { return diagnosticFormat; }
+    bool UsesRowCopyColor() const { return rowCopy[Color]; }
     ID3D11Resource* Original(Role role) const { return originals[role].Get(); }
     ID3D11Texture2D* Converted(Role role) const { return converted[role].texture.Get(); }
     float OriginalMvY() const { return mvY; }
@@ -184,6 +217,8 @@ void CSMain(uint3 p : SV_DispatchThreadID) {
             Ptr<ID3D11Texture2D> texture;
             if(FAILED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) return E_INVALIDARG;
             auto& d=descriptions[role]; texture->GetDesc(&d);
+            diagnosticRole=role; diagnosticFormat=d.Format;
+            rowCopy[role]=role==Color && RowCopyColor(d.Format);
             reason="extent/mip/array/sample";
             if(d.MipLevels!=1 || d.ArraySize!=1 || d.SampleDesc.Count!=1 || !d.Width || !d.Height) return E_INVALIDARG;
             if(role==Output) { if(d.Width!=tw || d.Height!=th) return E_INVALIDARG; }
@@ -192,13 +227,20 @@ void CSMain(uint3 p : SV_DispatchThreadID) {
             reason="input format";
             auto view=ReadFormat(d.Format);
             bool depthPlane=role==Depth && (view==DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS||view==DXGI_FORMAT_R24_UNORM_X8_TYPELESS);
-            if(!FloatView(view) && !depthPlane && !(role==Output && d.Format==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)) return E_INVALIDARG;
+            if(!FloatView(view) && !depthPlane && !rowCopy[role] && !(role==Output && d.Format==DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)) return E_INVALIDARG;
         }
         reason="shader initialization";
         auto hr=Init(dev); if(FAILED(hr)) return hr;
         for(unsigned role=0;role<RoleCount;role++) {
             if(!newOriginals[role]) { inputs[role].Reset(); continue; }
             auto d=descriptions[role]; auto view=ReadFormat(d.Format);
+            diagnosticRole=role; diagnosticFormat=d.Format;
+            if(rowCopy[role]) {
+                inputs[role].Reset();
+                reason="raw row-copy color clone";
+                hr=EnsureRowCopy(converted[role],d); if(FAILED(hr)) return hr;
+                continue;
+            }
             reason="input SRV";
             D3D11_SHADER_RESOURCE_VIEW_DESC srv {};
             srv.Format=view; srv.ViewDimension=D3D11_SRV_DIMENSION_TEXTURE2D; srv.Texture2D.MipLevels=1;
@@ -272,7 +314,8 @@ void CSMain(uint3 p : SV_DispatchThreadID) {
             if(!originals[role]) continue;
             if(role!=Output) {
                 D3D11_TEXTURE2D_DESC d {}; converted[role].texture->GetDesc(&d);
-                Flip(context,inputs[role].Get(),converted[role].write.Get(),d.Width,d.Height);
+                if(rowCopy[role]) FlipRows(context,originals[role].Get(),converted[role].texture.Get(),d);
+                else Flip(context,inputs[role].Get(),converted[role].write.Get(),d.Width,d.Height);
             }
             params->Set(Names[role],static_cast<ID3D11Resource*>(converted[role].texture.Get()));
         }

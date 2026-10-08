@@ -1,5 +1,6 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "D3D11_Hooks.h"
+#include "GimiDx12OutputScope.h"
 
 #include <Util.h>
 #include <Config.h>
@@ -129,6 +130,13 @@ static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_
 {
     LOG_DEBUG("Caller: {}, Device: {:X}", Util::WhoIsTheCaller(_ReturnAddress()), (UINT64) pDevice);
 
+    if (gimi_interop::RejectPrivateWarningOn12(_ReturnAddress(), pDevice, Flags, pFeatureLevels,
+            FeatureLevels, ppCommandQueues, NumQueues, NodeMask, ppDevice, ppImmediateContext, pChosenFeatureLevel))
+    {
+        LOG_INFO("Rocket/legacy GIMI compatibility: private-output warning-only D3D11On12 request declined; normal DX11 model path unchanged");
+        return E_NOTIMPL;
+    }
+
 #ifdef ENABLE_DEBUG_LAYER_DX11
     Flags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
@@ -143,7 +151,7 @@ static HRESULT hkD3D11On12CreateDevice(IUnknown* pDevice, UINT Flags, const D3D_
     // Assuming RTSS is creating a D3D11on12 device, not sure why but sometimes RTSS tries to create
     // it's D3D11on12 device with old CommandQueue which results crash
     // I am changing it's CommandQueue with current swapchain's command queue
-    if (State::Instance().currentCommandQueue != nullptr &&
+    if (!copyCommandQueues.empty() && State::Instance().currentCommandQueue != nullptr &&
         copyCommandQueues[0] != State::Instance().currentCommandQueue &&
         GetModuleHandle(L"RTSSHooks64.dll") != nullptr && pDevice == State::Instance().currentD3D12Device)
     {
@@ -598,3 +606,9 @@ void D3D11Hooks::Unhook()
 }
 
 #pragma endregion
+
+// 供配套 GIMI 查询当前线程是否正在创建私有帧生成输出；无对象传递。
+extern "C" __declspec(dllexport) BOOL WINAPI OptiScalerIsPrivateDx12Output()
+{
+    return gimi_interop::private_dx12_output_depth != 0 ? TRUE : FALSE;
+}
